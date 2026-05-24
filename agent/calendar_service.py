@@ -268,8 +268,18 @@ def agendar_cita(
         descripcion = "\n".join(descripcion_lineas)
 
         # Crear evento
+        # NOTA: Las Service Accounts de Google NO pueden invitar attendees
+        # ni crear Google Meet en calendars de Gmail personal (solo Workspace).
+        # Por eso ponemos toda la info del doctor en el titulo y descripcion,
+        # y el equipo de Lapora contactara al doctor por WhatsApp.
+
+        titulo_partes = [f"🩺 Lapora — {nombre_doctor}"]
+        if especialidad:
+            titulo_partes.append(f"({especialidad})")
+        titulo = " ".join(titulo_partes)
+
         evento = {
-            "summary": f"🩺 Lapora — Diagnostico con {nombre_doctor}",
+            "summary": titulo,
             "description": descripcion,
             "start": {
                 "dateTime": dt_inicio.isoformat(),
@@ -286,30 +296,15 @@ def agendar_cita(
                     {"method": "email", "minutes": 60},
                 ],
             },
+            # Color rojo/naranja para destacar (Lapora brand color)
+            "colorId": "11",
         }
 
-        # Agregar invitado si tiene email
-        if email_doctor:
-            evento["attendees"] = [{"email": email_doctor}]
-            # Agregar Google Meet automatico
-            evento["conferenceData"] = {
-                "createRequest": {
-                    "requestId": f"sofia-{int(dt_inicio.timestamp())}",
-                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
-                }
-            }
-
         service = _obtener_servicio()
-        kwargs = {"calendarId": CALENDAR_ID, "body": evento}
-        if email_doctor:
-            kwargs["conferenceDataVersion"] = 1
-            kwargs["sendUpdates"] = "all"  # Envia email a invitados
-
-        evento_creado = service.events().insert(**kwargs).execute()
-
-        link_meet = ""
-        if "hangoutLink" in evento_creado:
-            link_meet = f"\nEnlace de Google Meet: {evento_creado['hangoutLink']}"
+        evento_creado = service.events().insert(
+            calendarId=CALENDAR_ID,
+            body=evento,
+        ).execute()
 
         fecha_legible = dt_inicio.strftime("%A %d de %B a las %I:%M %p")
 
@@ -317,12 +312,12 @@ def agendar_cita(
             "exito": True,
             "mensaje": (
                 f"Cita agendada exitosamente para el {fecha_legible} (Colombia). "
-                f"Duracion: {DURATION_MIN} minutos."
-                f"{link_meet}"
+                f"Duracion: {DURATION_MIN} minutos. "
+                f"El equipo de Lapora te contactara por WhatsApp para confirmar."
             ),
             "evento_id": evento_creado.get("id"),
             "link_calendar": evento_creado.get("htmlLink"),
-            "link_meet": evento_creado.get("hangoutLink", ""),
+            "link_meet": "",  # No disponible para Gmail personal
         }
 
     except HttpError as e:

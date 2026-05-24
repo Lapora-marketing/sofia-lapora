@@ -8,6 +8,14 @@
 .env.local
 .env.production
 *.secret
+*.json
+!railway.json
+!package.json
+!package-lock.json
+!tsconfig.json
+credentials/
+service-account*.json
+lapora-sofia*.json
 
 # 🗄️ Base de datos local (en produccion usaremos PostgreSQL)
 *.db
