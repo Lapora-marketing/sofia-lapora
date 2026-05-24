@@ -2544,9 +2544,9 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
                 controlIconsEnabled: false,
                 fit: true,
                 center: true,
-                minZoom: 0.3,
-                maxZoom: 5,
-                zoomScaleSensitivity: 0.3,
+                minZoom: 0.1,
+                maxZoom: 50,
+                zoomScaleSensitivity: 0.5,
                 mouseWheelZoomEnabled: true,
                 preventMouseEventsDefault: true,
                 dblClickZoomEnabled: false,
@@ -2554,8 +2554,8 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
         }}
         setTimeout(inicializarZoom, 500);
 
-        function zoomIn() {{ if (panZoomInstance) panZoomInstance.zoomBy(1.3); }}
-        function zoomOut() {{ if (panZoomInstance) panZoomInstance.zoomBy(0.77); }}
+        function zoomIn() {{ if (panZoomInstance) panZoomInstance.zoomBy(1.6); }}
+        function zoomOut() {{ if (panZoomInstance) panZoomInstance.zoomBy(0.62); }}
         function zoomReset() {{ if (panZoomInstance) {{ panZoomInstance.resetZoom(); panZoomInstance.center(); }} }}
         function zoomFit() {{ if (panZoomInstance) {{ panZoomInstance.fit(); panZoomInstance.center(); }} }}
 
