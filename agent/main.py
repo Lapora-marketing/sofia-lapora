@@ -99,8 +99,8 @@ async def webhook_handler(request: Request):
             # (brain.py agrega el mensaje actual, evitando duplicados)
             historial = await obtener_historial(msg.telefono)
 
-            # Generar respuesta con Claude
-            respuesta = await generar_respuesta(msg.texto, historial)
+            # Generar respuesta con Claude (con telefono para tools)
+            respuesta = await generar_respuesta(msg.texto, historial, telefono_usuario=msg.telefono)
 
             # Guardar mensaje del usuario Y respuesta del agente en memoria
             await guardar_mensaje(msg.telefono, "user", msg.texto)
