@@ -1,12 +1,21 @@
-# Secretos — NUNCA subir a GitHub
-.env
+# ════════════════════════════════════════════════════════════
+# .gitignore de PRODUCCION — SofIA Lapora
+# Generado por AgentKit Fase 5
+# ════════════════════════════════════════════════════════════
 
-# Base de datos local
+# 🔐 SECRETOS — NUNCA subir a GitHub
+.env
+.env.local
+.env.production
+*.secret
+
+# 🗄️ Base de datos local (en produccion usaremos PostgreSQL)
 *.db
 *.sqlite
 *.sqlite3
+agentkit.db
 
-# Python
+# 🐍 Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -17,34 +26,29 @@ env/
 dist/
 build/
 
-# Knowledge (archivos privados del negocio)
+# 📚 Knowledge (archivos privados del negocio)
 knowledge/*
 !knowledge/.gitkeep
 
-# Archivos generados por Claude Code durante onboarding
-agent/
-config/
-tests/
-requirements.txt
-Dockerfile
-docker-compose.yml
-
-# Session state
+# 🔄 Session state
 config/session.yaml
 
-# OS
+# 💻 OS
 .DS_Store
 Thumbs.db
 
-# IDE
+# 🛠️ IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Docker
+# 🐳 Docker
 .dockerignore
 
-# Node (si se usa para Claude Code)
+# 📦 Node
 node_modules/
+
+# 🤖 Claude Code config local
+.claude/settings.local.json

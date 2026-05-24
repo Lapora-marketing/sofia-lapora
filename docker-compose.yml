@@ -1,0 +1,22 @@
+# docker-compose.yml — Orquestacion de SofIA en produccion
+# Generado por AgentKit
+
+version: "3.8"
+
+services:
+  agent:
+    build: .
+    container_name: sofia-lapora
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./knowledge:/app/knowledge
+      - ./config:/app/config
+      - sofia-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  sofia-data:
+    driver: local

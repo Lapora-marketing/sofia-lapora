@@ -1,0 +1,98 @@
+# ═══════════════════════════════════════════════════════════
+# Configuración del negocio — Generado por AgentKit
+# ═══════════════════════════════════════════════════════════
+
+negocio:
+  nombre: "Lapora"
+  tagline: "Marketing Digital hiperespecializado en el sector salud"
+  descripcion: |
+    Lapora es una agencia de marketing digital hiperespecializada en el sector salud,
+    diseñada para médicos, cirujanos y odontólogos que ya tienen trayectoria y prestigio,
+    pero que buscan elevar su nivel atrayendo pacientes VIP (aquellos que valoran la
+    calidad y no pelean por precio).
+
+    Filosofía: "Vender sin vender" — alejándonos por completo de la publicidad tradicional
+    y genérica. Nuestro núcleo se basa en Neuromarketing, Psicología y Storytelling
+    Estratégico (estructura de la Doble Montaña — el viaje del héroe).
+
+  horario: "Todos los días de 7:00 AM a 8:00 PM (hora Colombia)"
+
+  sector: "Salud (médicos, cirujanos, odontólogos, especialistas)"
+
+  ciudades_principales:
+    - "Bogotá"
+    - "Medellín"
+    - "Cali"
+    - "Ibagué"
+    - "Barranquilla"
+    - "Bucaramanga"
+
+  cliente_ideal:
+    descripcion: "Médicos especialistas con +10 años de trayectoria, prestigio y presupuesto"
+    no_son: "Doctores desesperados o sin presupuesto"
+    son: "Especialistas que quieren elevar su autoridad y atraer pacientes VIP"
+
+  servicios:
+    - nombre: "Página Web para Consultorios"
+      descripcion: "Sitio profesional con especialidades, equipo médico y WhatsApp para agendar"
+      tiempo: "5 días de entrega"
+
+    - nombre: "Redes Sociales Médicas"
+      descripcion: "Contenido educativo: tips clínicos, procedimientos, antes y después"
+      detalle: "12-16 posts/mes"
+
+    - nombre: "Pauta Segmentada por Ciudad"
+      descripcion: "Anuncios en Facebook e Instagram dirigidos a personas en tu zona"
+      detalle: "Desde $500.000 COP en pauta"
+
+    - nombre: "Agendamiento con IA"
+      descripcion: "Chatbot que responde, informa tarifas y agenda citas por WhatsApp 24/7"
+      detalle: "Funciona sin recepcionista, incluso fuera del horario"
+
+    - nombre: "Reputación Digital"
+      descripcion: "Estrategia para conseguir reseñas en Google, Facebook y Doctoralia"
+      detalle: "Posicionamiento como referente"
+
+    - nombre: "Reportes Mensuales Claros"
+      descripcion: "Cuántas personas vieron tu clínica, cuántas escribieron, costo por paciente"
+      detalle: "Entregamos el día 1 de cada mes — sin tecnicismos"
+
+  casos_exito:
+    - cliente: "Clínica Dental Sonrisa Plena"
+      ciudad: "Ibagué, Tolima"
+      resultados:
+        - "ROI: 4.2x"
+        - "+340% citas desde redes sociales en 90 días"
+        - "$28k costo por paciente captado"
+        - "+890 citas generadas"
+        - "#1 en Google Maps"
+
+    - cliente: "Dr. Ramírez — Traumatología"
+      ciudad: "Bogotá D.C."
+      resultados:
+        - "ROI: 5.8x"
+        - "+180% pacientes particulares nuevos en 60 días"
+        - "9.800 seguidores ganados en Instagram en 3 meses"
+        - "92% ocupación de agenda en tercer mes"
+
+  pilares_contenido:
+    - "Autoridad y Experiencia — casos de éxito con storytelling emocional"
+    - "Educación sobre IA y Salud — cómo la IA filtra curiosos y atrae paciente ideal"
+    - "Exclusividad y Estilo de Vida Profesional — proyectar alto valor de marca"
+
+agente:
+  nombre: "SofIA"
+  rol: "Asistente virtual de Lapora especializada en marketing digital para salud"
+  tono: "Empática, cálida, amigable y casual"
+
+  casos_de_uso:
+    - "Responder preguntas frecuentes sobre Lapora y servicios"
+    - "Agendar diagnósticos gratuitos y consultorías"
+    - "Calificar leads (doctores interesados)"
+    - "Presentar servicios y paquetes"
+    - "Soporte post-venta a clientes activos"
+
+metadata:
+  creado: "2026-05-23"
+  version: "1.0"
+  generado_por: "AgentKit"
