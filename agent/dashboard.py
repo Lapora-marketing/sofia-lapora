@@ -1644,6 +1644,60 @@ flowchart TD
     TESTIM --> ORG
     NUEVO_REF -->|Cierra el ciclo| REF1
 
+    click F1 call mostrarInfo("F1")
+    click ORG call mostrarInfo("ORG")
+    click PAID call mostrarInfo("PAID")
+    click SEO call mostrarInfo("SEO")
+    click NET call mostrarInfo("NET")
+    click REF1 call mostrarInfo("REF1")
+    click POV call mostrarInfo("POV")
+    click CASOS call mostrarInfo("CASOS")
+    click EDU call mostrarInfo("EDU")
+    click AUTH call mostrarInfo("AUTH")
+    click WEB call mostrarInfo("WEB")
+    click DIAG call mostrarInfo("DIAG")
+    click CALC call mostrarInfo("CALC")
+    click CTA call mostrarInfo("CTA")
+    click SOFIA call mostrarInfo("SOFIA")
+    click CTX call mostrarInfo("CTX")
+    click CRM call mostrarInfo("CRM")
+    click QUAL call mostrarInfo("QUAL")
+    click NURT call mostrarInfo("NURT")
+    click AGENDA call mostrarInfo("AGENDA")
+    click REM1 call mostrarInfo("REM1")
+    click REUNION1 call mostrarInfo("REUNION1")
+    click AUDIT call mostrarInfo("AUDIT")
+    click PROP_REC call mostrarInfo("PROP_REC")
+    click INT call mostrarInfo("INT")
+    click FOLLOWUP call mostrarInfo("FOLLOWUP")
+    click PROP call mostrarInfo("PROP")
+    click TIERS call mostrarInfo("TIERS")
+    click CASOS_EX call mostrarInfo("CASOS_EX")
+    click GARANT call mostrarInfo("GARANT")
+    click CIERRE call mostrarInfo("CIERRE")
+    click NURT_LONG call mostrarInfo("NURT_LONG")
+    click PAGO call mostrarInfo("PAGO")
+    click ONBOARD call mostrarInfo("ONBOARD")
+    click KICKOFF call mostrarInfo("KICKOFF")
+    click SETUP call mostrarInfo("SETUP")
+    click EJEC call mostrarInfo("EJEC")
+    click CONTENIDO call mostrarInfo("CONTENIDO")
+    click ADS_GEST call mostrarInfo("ADS_GEST")
+    click SEO_OPT call mostrarInfo("SEO_OPT")
+    click BOT_LIVE call mostrarInfo("BOT_LIVE")
+    click REPORTES call mostrarInfo("REPORTES")
+    click MES1 call mostrarInfo("MES1")
+    click AJUSTE call mostrarInfo("AJUSTE")
+    click PAGO_REC call mostrarInfo("PAGO_REC")
+    click RET call mostrarInfo("RET")
+    click KPI_OK call mostrarInfo("KPI_OK")
+    click UPSELL call mostrarInfo("UPSELL")
+    click CASOS_DOC call mostrarInfo("CASOS_DOC")
+    click AMB call mostrarInfo("AMB")
+    click INCENT call mostrarInfo("INCENT")
+    click TESTIM call mostrarInfo("TESTIM")
+    click NUEVO_REF call mostrarInfo("NUEVO_REF")
+
     classDef start fill:#1f1f1f,stroke:#444,color:#fff,stroke-width:1px
     classDef fase fill:#0d9488,stroke:#0d9488,color:#fff,stroke-width:2px,font-weight:bold
     classDef lapora fill:#FF3B30,stroke:#FF3B30,color:#fff,stroke-width:2px,font-weight:bold
@@ -1707,18 +1761,36 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
     html_body = f"""
     {CSS_BASE}
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
     <style>
         .funnel-canvas {{
             background: #0d0d0d;
             border-radius: var(--radius-lg);
-            padding: 32px;
-            overflow: auto;
-            min-height: 70vh;
+            padding: 0;
+            overflow: hidden;
+            min-height: 75vh;
+            height: 75vh;
             border: 1px solid #1f1f1f;
+            position: relative;
         }}
         .mermaid {{
             background: transparent;
-            text-align: center;
+            width: 100%;
+            height: 100%;
+        }}
+        .mermaid svg {{
+            width: 100% !important;
+            height: 100% !important;
+            max-width: none !important;
+            cursor: grab;
+        }}
+        .mermaid svg:active {{ cursor: grabbing; }}
+        .mermaid .node {{
+            cursor: pointer !important;
+            transition: filter 0.2s, transform 0.2s;
+        }}
+        .mermaid .node:hover {{
+            filter: brightness(1.25) drop-shadow(0 0 8px rgba(255,255,255,0.3));
         }}
         .funnel-grid {{
             display: grid;
@@ -1727,6 +1799,224 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
         }}
         @media (max-width: 1100px) {{
             .funnel-grid {{ grid-template-columns: 1fr; }}
+        }}
+
+        /* Controles de zoom */
+        .zoom-controls {{
+            position: absolute;
+            bottom: 16px;
+            right: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: rgba(20,20,20,0.85);
+            border: 1px solid #2a2a2a;
+            border-radius: 10px;
+            padding: 4px;
+            z-index: 10;
+            backdrop-filter: blur(8px);
+        }}
+        .zoom-btn {{
+            width: 36px;
+            height: 36px;
+            background: transparent;
+            border: none;
+            color: #ccc;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }}
+        .zoom-btn:hover {{
+            background: rgba(255,59,48,0.15);
+            color: var(--lapora-red);
+        }}
+        .zoom-hint {{
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            background: rgba(20,20,20,0.85);
+            border: 1px solid #2a2a2a;
+            border-radius: 10px;
+            padding: 8px 14px;
+            font-size: 12px;
+            color: #888;
+            z-index: 10;
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .zoom-hint kbd {{
+            background: #2a2a2a;
+            border: 1px solid #3a3a3a;
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-size: 10px;
+            color: #ccc;
+            font-family: 'Inter';
+        }}
+
+        /* Modal de info */
+        .info-modal-bg {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }}
+        .info-modal-bg.show {{
+            opacity: 1;
+            pointer-events: auto;
+        }}
+        .info-modal {{
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 480px;
+            max-width: 95vw;
+            background: white;
+            box-shadow: -10px 0 40px rgba(0,0,0,0.3);
+            transform: translateX(100%);
+            transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+            z-index: 1001;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }}
+        .info-modal.show {{
+            transform: translateX(0);
+        }}
+        .info-modal-header {{
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }}
+        .info-modal-title-wrap {{
+            flex: 1;
+            min-width: 0;
+        }}
+        .info-modal-badge {{
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }}
+        .info-modal-title {{
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--gray-900);
+            letter-spacing: -0.3px;
+            line-height: 1.2;
+        }}
+        .info-modal-close {{
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: var(--gray-100);
+            border: none;
+            color: var(--gray-600);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }}
+        .info-modal-close:hover {{
+            background: var(--lapora-red);
+            color: white;
+        }}
+        .info-modal-body {{
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }}
+        .info-section {{
+            margin-bottom: 20px;
+        }}
+        .info-section:last-child {{ margin-bottom: 0; }}
+        .info-section h4 {{
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--gray-500);
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            margin-bottom: 8px;
+        }}
+        .info-section p {{
+            color: var(--gray-700);
+            font-size: 14px;
+            line-height: 1.6;
+        }}
+        .info-section ul {{
+            list-style: none;
+            padding: 0;
+        }}
+        .info-section ul li {{
+            position: relative;
+            padding-left: 22px;
+            font-size: 14px;
+            line-height: 1.5;
+            color: var(--gray-700);
+            margin-bottom: 8px;
+        }}
+        .info-section ul li::before {{
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 8px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--lapora-red);
+        }}
+        .info-stat-grid {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }}
+        .info-stat {{
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 10px;
+            padding: 12px;
+        }}
+        .info-stat-label {{
+            font-size: 11px;
+            color: var(--gray-500);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            margin-bottom: 4px;
+        }}
+        .info-stat-value {{
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--gray-900);
+        }}
+        .info-modal-footer {{
+            padding: 16px 24px;
+            border-top: 1px solid var(--gray-200);
+            background: var(--gray-50);
+            font-size: 12px;
+            color: var(--gray-500);
+            text-align: center;
         }}
     </style>
 </head>
@@ -1737,7 +2027,7 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
             <div class="page-header">
                 <div>
                     <div class="page-title">Funnel Completo Lapora</div>
-                    <div class="page-subtitle">Prospectos &rarr; Calificacion &rarr; Clientes &rarr; Ventas &rarr; Referidos</div>
+                    <div class="page-subtitle">Click en cualquier casilla para ver detalles &middot; Scroll para zoom &middot; Arrastra para mover</div>
                 </div>
                 <div style="display:flex;gap:8px">
                     <button class="btn btn-secondary" onclick="window.print()">
@@ -1756,10 +2046,20 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
                     <div class="card-header">
                         <div>
                             <div class="card-title">Diagrama del Funnel</div>
-                            <div class="card-subtitle">9 fases - Sistema completo de adquisicion</div>
+                            <div class="card-subtitle">9 fases &middot; Click en cualquier nodo para ver detalles</div>
                         </div>
                     </div>
-                    <div class="funnel-canvas">
+                    <div class="funnel-canvas" id="funnel-canvas">
+                        <div class="zoom-hint">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                            <span>Click para info &middot; <kbd>scroll</kbd> zoom &middot; <kbd>drag</kbd> mover</span>
+                        </div>
+                        <div class="zoom-controls">
+                            <button class="zoom-btn" onclick="zoomIn()" title="Zoom in">+</button>
+                            <button class="zoom-btn" onclick="zoomOut()" title="Zoom out">&minus;</button>
+                            <button class="zoom-btn" onclick="zoomReset()" title="Reset" style="font-size:14px">&#8634;</button>
+                            <button class="zoom-btn" onclick="zoomFit()" title="Ajustar" style="font-size:13px">&#9633;</button>
+                        </div>
                         <div class="mermaid" id="funnel-diagram">
 {FUNNEL_MERMAID}
                         </div>
@@ -1792,9 +2092,415 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
         </main>
     </div>
 
+    <!-- Modal de info -->
+    <div class="info-modal-bg" id="modalBg" onclick="cerrarModal()"></div>
+    <div class="info-modal" id="infoModal">
+        <div class="info-modal-header">
+            <div class="info-modal-title-wrap">
+                <span class="info-modal-badge" id="modalBadge"></span>
+                <div class="info-modal-title" id="modalTitle"></div>
+            </div>
+            <button class="info-modal-close" onclick="cerrarModal()" title="Cerrar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="info-modal-body" id="modalBody"></div>
+        <div class="info-modal-footer">Funnel Lapora &middot; Estrategia 2026</div>
+    </div>
+
     <script>
+        // ============================================
+        // INFORMACION DETALLADA DE CADA NODO
+        // ============================================
+        const NODE_INFO = {{
+            F1: {{
+                cat: "Fase 1", catColor: "#0d9488",
+                title: "Captacion - Top of Funnel",
+                descripcion: "Objetivo: que doctores potenciales descubran a Lapora a traves de multiples canales digitales y offline.",
+                acciones: ["Contenido organico en redes", "Anuncios pagados Meta + Google", "SEO local (Ibague, Tolima, Bogota)", "Networking medico y eventos", "Referidos de clientes activos"],
+                kpis: [["Visitas/mes", "5.000+"], ["Conv. a diagnostico", ">15%"]]
+            }},
+            ORG: {{
+                cat: "Canal", catColor: "#1f2937",
+                title: "Contenido Organico",
+                descripcion: "Construir audiencia y autoridad con contenido educativo de alto valor en Instagram, TikTok y LinkedIn.",
+                acciones: ["Reels 3-5 por semana", "Carruseles educativos", "Stories diarias", "Lives mensuales con casos", "Hashtags locales (#MarketingMedicoIbague)"],
+                kpis: [["Posts/semana", "12+"], ["Engagement", ">5%"]]
+            }},
+            PAID: {{
+                cat: "Canal", catColor: "#1f2937",
+                title: "Anuncios Pagados",
+                descripcion: "Meta Ads y Google Ads para acelerar el alcance hacia el ICP (Ideal Customer Profile).",
+                acciones: ["Campanas Meta a doctores 30-55 anos", "Google Ads en busquedas tipo 'marketing medico'", "Retargeting de visitas a lapora.studio", "Test A/B semanal"],
+                kpis: [["CAC", "<USD 80"], ["ROAS", ">3x"]]
+            }},
+            SEO: {{
+                cat: "Canal", catColor: "#1f2937",
+                title: "SEO Local",
+                descripcion: "Posicionar lapora.studio en busquedas locales y nacionales relacionadas con marketing para medicos.",
+                acciones: ["Keywords: 'marketing digital medicos', 'marketing odontologos Ibague'", "Google My Business optimizado", "Backlinks de clinicas y blogs medicos", "Contenido blog 2x/mes"],
+                kpis: [["Keywords top 10", "30+"], ["Trafico organico", "1.5K/mes"]]
+            }},
+            NET: {{
+                cat: "Canal", catColor: "#1f2937",
+                title: "Networking Medico",
+                descripcion: "Construir relaciones directas en eventos del sector salud para generar leads de alto ticket.",
+                acciones: ["Asistir a congresos medicos", "Camara de Comercio Ibague", "Patrocinar eventos pequenos", "Almuerzos 1:1 con KOLs"],
+                kpis: [["Eventos/mes", "2-3"], ["Leads/evento", "5-10"]]
+            }},
+            REF1: {{
+                cat: "Referidos", catColor: "#7c3aed",
+                title: "Referidos de Clientes",
+                descripcion: "El canal mas rentable: clientes felices recomiendan a sus colegas. CAC casi cero.",
+                acciones: ["Pedir referidos mes 3 + mes 6", "Incentivo 15% comision o 1 mes gratis", "Carta de presentacion + caso de exito"],
+                kpis: [["Referidos/cliente/ano", ">1"], ["Conv. referido", ">60%"]]
+            }},
+            POV: {{
+                cat: "Tipo contenido", catColor: "#1f2937",
+                title: "POV de Pacientes",
+                descripcion: "Videos cortos en primera persona del paciente mostrando su experiencia con el medico. Altamente viral.",
+                acciones: ["Grabar testimonios en consulta", "Edicion vertical para Reels/TikTok", "Subtitulos llamativos", "Hook en primeros 3 segundos"]
+            }},
+            CASOS: {{
+                cat: "Tipo contenido", catColor: "#1f2937",
+                title: "Casos de Exito",
+                descripcion: "Documentar antes/despues de clientes para social proof. Muestran ROI tangible.",
+                acciones: ["Capturas de stats reales", "Video del doctor contando resultados", "Comparativas mes 1 vs mes 6", "Numero de pacientes nuevos"]
+            }},
+            EDU: {{
+                cat: "Tipo contenido", catColor: "#1f2937",
+                title: "Tips de Marketing Medico",
+                descripcion: "Contenido educativo que posiciona a Lapora como autoridad en marketing para el sector salud.",
+                acciones: ["Hooks tipo 'el error #1 que cometen los medicos'", "Carruseles con 5-7 tips", "Estadisticas del sector salud", "CTA suaves a lapora.studio"]
+            }},
+            AUTH: {{
+                cat: "Tipo contenido", catColor: "#1f2937",
+                title: "Autoridad Medica",
+                descripcion: "Formato pizarra o podcast clips para construir autoridad de marca y atraer doctores premium.",
+                acciones: ["Videos pizarra estilo Whiteboard", "Clips de podcast con expertos", "Entrevistas a medicos exitosos", "Series tematicas mensuales"]
+            }},
+            WEB: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "lapora.studio - Landing + Diagnostico",
+                descripcion: "Sitio web principal donde converge todo el trafico. Optimizado para conversion a diagnostico digital.",
+                acciones: ["Landing con propuesta de valor clara", "CTA principal: Diagnostico Gratis", "Casos de exito visibles", "FAQ + testimonios", "WhatsApp directo +57 322 878 3019"],
+                kpis: [["Conv. visitor &rarr; diag", ">15%"], ["Tiempo en pagina", ">2 min"]]
+            }},
+            DIAG: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Diagnostico Digital Gratis",
+                descripcion: "Lead magnet de 5 preguntas en 2 minutos. Califica al lead y genera contexto para SofIA.",
+                acciones: ["Pregunta 1: Especialidad", "Pregunta 2: Ciudad", "Pregunta 3: Volumen pacientes/mes", "Pregunta 4: Presencia digital actual", "Pregunta 5: Reto principal"],
+                kpis: [["Tasa completacion", ">80%"], ["Conv. a WhatsApp", ">70%"]]
+            }},
+            CALC: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Calculo de Perdida Mensual",
+                descripcion: "Algoritmo que estima cuanto dinero pierde el doctor cada mes en pacientes que van a la competencia.",
+                acciones: ["Base de datos por especialidad", "Multiplicador por presencia digital", "Multiplicador por volumen", "Rango tipico: COP 15M-35M/mes"],
+                kpis: [["Impacto emocional", "Alto"], ["Justifica precio", "Si"]]
+            }},
+            CTA: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "CTA a WhatsApp con SofIA",
+                descripcion: "Boton final del diagnostico que abre WhatsApp con el contexto completo del doctor.",
+                acciones: ["Boton verde llamativo", "Pre-fill mensaje con datos del diagnostico", "Tracking de conversion", "Numero: +57 322 878 3019"]
+            }},
+            SOFIA: {{
+                cat: "Fase 2", catColor: "#0d9488",
+                title: "SofIA - Bot IA WhatsApp",
+                descripcion: "Asistente virtual que califica leads, agenda citas y nutre relaciones 24/7 sin intervencion humana.",
+                acciones: ["Powered by Claude Sonnet 4.6", "Memoria persistente en PostgreSQL", "Tool Use con Google Calendar", "Recordatorios automaticos 1h antes"],
+                kpis: [["Disponibilidad", "24/7"], ["Tiempo respuesta", "<5s"]]
+            }},
+            CTX: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Contexto del Diagnostico",
+                descripcion: "SofIA recibe automaticamente la especialidad, ciudad, volumen, presencia y reto del doctor sin re-preguntar.",
+                acciones: ["Mensaje inicial con todo el contexto", "Personalizacion inmediata", "No re-pregunta lo ya sabido", "Pasa directo a soluciones"]
+            }},
+            CRM: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Auto-creacion en CRM",
+                descripcion: "Cada lead nuevo se crea automaticamente como contacto en el CRM de Lapora con estado 'Nuevo'.",
+                acciones: ["Crea Contacto con telefono", "Guarda nombre, especialidad, ciudad", "Estado inicial: Nuevo", "Visible en /admin/contactos"]
+            }},
+            QUAL: {{
+                cat: "Decision", catColor: "#f87171",
+                title: "Filtro de Calificacion",
+                descripcion: "SofIA evalua si el doctor cumple el ICP de Lapora. Solo los calificados pasan a agendamiento.",
+                acciones: ["Especialidad de alto ticket: Si", "Ciudad cubierta: Si", "Volumen aceptable: Si", "Presupuesto razonable: Si"],
+                kpis: [["Tasa calificacion", ">40%"]]
+            }},
+            NURT: {{
+                cat: "Recuperacion", catColor: "#f59e0b",
+                title: "Secuencia de Nurturing",
+                descripcion: "Doctores que no califican aun reciben contenido educativo por 3 meses para madurar la oportunidad.",
+                acciones: ["Email semanal con casos", "Contenido educativo segmentado", "Webinars mensuales", "Recalificacion cada 30 dias"]
+            }},
+            AGENDA: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Agendamiento Automatico",
+                descripcion: "SofIA agenda directamente en Google Calendar del equipo Lapora sin intervencion humana.",
+                acciones: ["Verifica disponibilidad real", "Crea evento en Google Calendar", "Confirma con doctor por WhatsApp", "Envia recordatorio 1h antes"]
+            }},
+            REM1: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Recordatorio 1h antes",
+                descripcion: "SofIA envia automaticamente mensaje 1h antes para confirmar asistencia y reducir no-shows.",
+                acciones: ["Mensaje personalizado con nombre", "Hora exacta en formato local", "Opcion de reagendar facilmente", "Reduce no-shows ~25%"],
+                kpis: [["Show rate", ">75%"]]
+            }},
+            REUNION1: {{
+                cat: "Fase 4", catColor: "#0d9488",
+                title: "Diagnostico Profundo",
+                descripcion: "Llamada de 30 minutos en Zoom/Meet donde se audita la presencia digital completa del doctor en vivo.",
+                acciones: ["Conexion personal", "Auditoria pantalla compartida", "Identificar 3-5 fugas digitales", "Plantear plan de solucion"],
+                kpis: [["Duracion", "30 min"], ["Conv. a propuesta", ">50%"]]
+            }},
+            AUDIT: {{
+                cat: "Proceso", catColor: "#1f2937",
+                title: "Auditoria Completa",
+                descripcion: "Revision detallada de Google My Business, Instagram, sitio web, reviews y anuncios actuales.",
+                acciones: ["Google My Business score", "Instagram engagement rate", "Web speed + UX score", "Reviews promedio", "Calidad de anuncios actuales"]
+            }},
+            PROP_REC: {{
+                cat: "Proceso", catColor: "#1f2937",
+                title: "Recomendacion Personalizada",
+                descripcion: "En vivo durante la reunion se presenta una solucion adaptada a los hallazgos del diagnostico.",
+                acciones: ["Plan a medida con prioridades", "Casos similares de exito", "Timeline 30/60/90 dias", "Pre-vista del ROI esperado"]
+            }},
+            INT: {{
+                cat: "Decision", catColor: "#f87171",
+                title: "Interesado en Propuesta?",
+                descripcion: "Punto de decision tras el diagnostico profundo. Si esta listo se envia propuesta formal.",
+                acciones: ["Si: pasar a Fase 5", "No ahora: follow-up estrategico", "Documentar objeciones", "Programar reach-out futuro"]
+            }},
+            FOLLOWUP: {{
+                cat: "Recuperacion", catColor: "#f59e0b",
+                title: "Follow-up Estrategico",
+                descripcion: "Seguimiento no agresivo basado en valor: enviar casos relevantes, novedades de Lapora, sin presion.",
+                acciones: ["Tocar cada 2-3 semanas", "Compartir casos similares", "No insistir en venta", "Estar top-of-mind"]
+            }},
+            PROP: {{
+                cat: "Fase 5", catColor: "#0d9488",
+                title: "Propuesta Personalizada",
+                descripcion: "Documento formal con plan a medida, pricing en 3 tiers, casos relevantes y garantia explicita.",
+                acciones: ["PDF profesional personalizado", "Pricing claro y transparente", "Timeline detallado", "Casos de exito relevantes"],
+                kpis: [["Win rate", ">30%"]]
+            }},
+            TIERS: {{
+                cat: "Componente", catColor: "#1f2937",
+                title: "3 Tiers de Pricing",
+                descripcion: "Starter (USD 1.000/mes), Growth (USD 2.000/mes), Premium (USD 4.000/mes) con anticipo 50%.",
+                acciones: ["Starter: Bot IA + contenido organico", "Growth: + anuncios pagados + SEO", "Premium: + web nueva + email marketing"]
+            }},
+            CASOS_EX: {{
+                cat: "Componente", catColor: "#1f2937",
+                title: "Casos de Exito",
+                descripcion: "Otaima, Nutrifit y otros clientes con resultados documentados. Social proof clave para cerrar.",
+                acciones: ["Video testimonios", "Numeros reales del cliente", "Antes/despues medibles", "Especialidad similar al prospecto"]
+            }},
+            GARANT: {{
+                cat: "Componente", catColor: "#1f2937",
+                title: "Garantia Mes 1",
+                descripcion: "Si al finalizar el mes 1 no hay resultados medibles (alcance, leads, citas), Lapora ajusta sin costo.",
+                acciones: ["Reduce friccion de cierre", "Doctor no teme probar", "Demuestra confianza en el sistema", "Diferenciador vs competencia"]
+            }},
+            CIERRE: {{
+                cat: "Decision", catColor: "#f87171",
+                title: "Firma del Contrato",
+                descripcion: "Momento de cierre. Si firma, se procesa el anticipo y se inicia onboarding.",
+                acciones: ["Contrato digital", "Firma electronica", "Pago anticipo 50%", "Calendarizar kickoff"]
+            }},
+            NURT_LONG: {{
+                cat: "Recuperacion", catColor: "#f59e0b",
+                title: "Nurturing Largo Plazo",
+                descripcion: "Los que no firman entran a nurturing de 6 meses con nuevos casos y actualizaciones de servicio.",
+                acciones: ["Newsletter mensual", "Compartir nuevos casos exitosos", "Eventos exclusivos online", "Re-pitch en mes 6"]
+            }},
+            PAGO: {{
+                cat: "Dinero entra", catColor: "#84cc16",
+                title: "Anticipo 50%",
+                descripcion: "Primer pago del cliente: USD 1.500 - 5.000 segun tier elegido. Confirma compromiso real.",
+                acciones: ["Wise / PayPal / Bancolombia", "Factura electronica", "Confirmacion automatica", "Trigger onboarding"],
+                kpis: [["Ticket promedio", "USD 2.500"]]
+            }},
+            ONBOARD: {{
+                cat: "Fase 6", catColor: "#0d9488",
+                title: "Onboarding",
+                descripcion: "Proceso estructurado de 7 dias para configurar todo lo necesario antes de empezar la ejecucion.",
+                acciones: ["Welcome kit digital", "Acceso a Slack/WhatsApp privado", "Calendarizar kickoff meeting", "Solicitar accesos a herramientas"]
+            }},
+            KICKOFF: {{
+                cat: "Proceso", catColor: "#1f2937",
+                title: "Kickoff Meeting",
+                descripcion: "Reunion inicial para alinear expectativas y presentar estrategia 30/60/90 dias del proyecto.",
+                acciones: ["Equipo Lapora completo presente", "Roadmap visual del proyecto", "Definir KPIs especificos", "Asignar punto de contacto unico"]
+            }},
+            SETUP: {{
+                cat: "Proceso", catColor: "#1f2937",
+                title: "Setup Tecnico",
+                descripcion: "Configuracion de todas las herramientas y accesos necesarios para empezar la ejecucion.",
+                acciones: ["Configurar Bot IA WhatsApp", "Instalar pixeles + analytics", "Conectar Google Ads / Meta", "Setup branding consistente"]
+            }},
+            EJEC: {{
+                cat: "Fase 7", catColor: "#0d9488",
+                title: "Ejecucion Mensual",
+                descripcion: "Operacion mensual con entregables fijos y reportes semanales transparentes para el cliente.",
+                acciones: ["Produccion contenido continuo", "Gestion de anuncios", "Optimizacion SEO", "Bot IA activo 24/7", "Reportes semanales"]
+            }},
+            CONTENIDO: {{
+                cat: "Entregable", catColor: "#1f2937",
+                title: "Produccion de Contenido",
+                descripcion: "Reels, posts, videos y stories profesionales producidos por el equipo Lapora cada mes.",
+                acciones: ["12-20 reels/mes", "8-12 posts/mes", "Stories diarias", "1-2 videos largos/mes"]
+            }},
+            ADS_GEST: {{
+                cat: "Entregable", catColor: "#1f2937",
+                title: "Gestion de Anuncios",
+                descripcion: "Campanas activas en Meta Ads, Google Ads y TikTok Ads con optimizacion continua.",
+                acciones: ["Test A/B semanal", "Optimizacion de audiencias", "Creativos nuevos cada 15 dias", "Reportes ROAS"]
+            }},
+            SEO_OPT: {{
+                cat: "Entregable", catColor: "#1f2937",
+                title: "Optimizacion SEO",
+                descripcion: "Trabajo continuo en SEO local y nacional para escalar trafico organico del cliente.",
+                acciones: ["Auditorias mensuales", "Contenido SEO blog", "Backlinks de calidad", "Google My Business updates"]
+            }},
+            BOT_LIVE: {{
+                cat: "Lapora", catColor: "#FF3B30",
+                title: "Bot IA WhatsApp Activo",
+                descripcion: "El cliente recibe su propio bot personalizado que atiende a sus pacientes 24/7.",
+                acciones: ["Bot con tono del medico", "Agenda citas automatico", "FAQ del consultorio", "Escalamiento a humano cuando aplica"]
+            }},
+            REPORTES: {{
+                cat: "Entregable", catColor: "#1f2937",
+                title: "Reportes Semanales",
+                descripcion: "Reportes transparentes cada semana con KPIs claros y plan de accion para la siguiente semana.",
+                acciones: ["Alcance total", "Leads generados", "Citas agendadas", "Costo por paciente", "ROAS por canal"]
+            }},
+            MES1: {{
+                cat: "Decision", catColor: "#f87171",
+                title: "Mes 1 Exitoso?",
+                descripcion: "Punto de evaluacion critico al finalizar el mes 1. Si no hay resultados, garantia se activa.",
+                acciones: ["Revisar KPIs vs baseline", "Reunion de evaluacion", "Si: continuar plan", "No: ajuste sin costo"]
+            }},
+            AJUSTE: {{
+                cat: "Recuperacion", catColor: "#f59e0b",
+                title: "Ajuste sin Costo",
+                descripcion: "Cuando mes 1 no cumple, Lapora ajusta la estrategia sin cobrar extra. Cumplir la garantia.",
+                acciones: ["Diagnostico de que fallo", "Nueva estrategia propuesta", "Recursos adicionales", "Sin cobro adicional"]
+            }},
+            PAGO_REC: {{
+                cat: "Dinero entra", catColor: "#84cc16",
+                title: "Pago Recurrente Mensual",
+                descripcion: "USD 1.000 - 4.000 por mes segun tier. Ingreso predecible y compuesto.",
+                acciones: ["Cobro automatico mes 2 en adelante", "Factura electronica mensual", "Renovacion anual con descuento"],
+                kpis: [["MRR objetivo", "USD 136K/mes"]]
+            }},
+            RET: {{
+                cat: "Fase 8", catColor: "#0d9488",
+                title: "Retencion - Mes 3+",
+                descripcion: "Cliente estable con KPIs predecibles. Momento de buscar upsell y documentar caso de exito.",
+                acciones: ["Reunion estrategica mensual", "Identificar oportunidades de crecimiento", "Construir relacion personal", "Anticipar renovacion anual"],
+                kpis: [["Retencion mes 6", ">70%"]]
+            }},
+            KPI_OK: {{
+                cat: "Resultado", catColor: "#1f2937",
+                title: "KPIs Estables",
+                descripcion: "ROAS de 3x a 8x sostenido. Costo por paciente nuevo bajo control. Doctor satisfecho.",
+                acciones: ["ROAS 3x-8x", "CAC paciente: COP 50K-150K", "LTV/CAC ratio > 3", "NPS > 50"]
+            }},
+            UPSELL: {{
+                cat: "Dinero entra", catColor: "#84cc16",
+                title: "Upsell de Servicios",
+                descripcion: "Ofrecer servicios adicionales: Bot IA premium, SEO avanzado, web nueva, email marketing.",
+                acciones: ["Audit cada trimestre", "Proponer mejoras incrementales", "Pricing transparente", "Trial 30 dias"]
+            }},
+            CASOS_DOC: {{
+                cat: "Proceso", catColor: "#1f2937",
+                title: "Documentar Caso de Exito",
+                descripcion: "Producir video y caso de estudio con permiso del cliente para usar en marketing de Lapora.",
+                acciones: ["Entrevista grabada en alta calidad", "Numeros reales documentados", "Antes/despues visual", "Permiso escrito firmado"]
+            }},
+            AMB: {{
+                cat: "Fase 9", catColor: "#0d9488",
+                title: "Lapora Ambassador",
+                descripcion: "Programa formal donde clientes felices generan nuevos clientes a cambio de incentivos atractivos.",
+                acciones: ["Carta de bienvenida al programa", "Materiales de venta personalizados", "Comisiones claras y rapidas", "Reconocimiento publico"]
+            }},
+            INCENT: {{
+                cat: "Referidos", catColor: "#7c3aed",
+                title: "Incentivos por Referido",
+                descripcion: "15% de comision del primer pago O 1 mes gratis de servicio. Doctor elige el incentivo.",
+                acciones: ["15% de USD 1.500 = USD 225", "1 mes gratis vale USD 1.000+", "Pago inmediato post-firma", "Sin limite anual"]
+            }},
+            TESTIM: {{
+                cat: "Referidos", catColor: "#7c3aed",
+                title: "Testimonios en Video",
+                descripcion: "Clientes ambassadors graban testimonios que se usan en marketing de Lapora.",
+                acciones: ["Set profesional o remoto guiado", "Preguntas estructuradas", "Edicion premium", "Distribucion en redes + web"]
+            }},
+            NUEVO_REF: {{
+                cat: "Referidos", catColor: "#7c3aed",
+                title: "Nuevo Doctor Recomendado",
+                descripcion: "Doctor nuevo llega via referido. Entra al funnel con conversion ~60% vs ~30% trafico frio.",
+                acciones: ["WhatsApp directo presentado", "Caso del ambassador como prueba", "Skip de Fase 1-2", "Directo a diagnostico profundo"]
+            }}
+        }};
+
+        // ============================================
+        // MODAL DE INFO
+        // ============================================
+        function mostrarInfo(nodeId) {{
+            const data = NODE_INFO[nodeId];
+            if (!data) return;
+
+            document.getElementById('modalBadge').textContent = data.cat;
+            document.getElementById('modalBadge').style.background = (data.catColor || '#1f2937') + '22';
+            document.getElementById('modalBadge').style.color = data.catColor || '#1f2937';
+            document.getElementById('modalTitle').textContent = data.title;
+
+            let bodyHTML = '';
+            if (data.descripcion) {{
+                bodyHTML += '<div class="info-section"><h4>Descripcion</h4><p>' + data.descripcion + '</p></div>';
+            }}
+            if (data.acciones && data.acciones.length) {{
+                bodyHTML += '<div class="info-section"><h4>Acciones / Tacticas</h4><ul>';
+                data.acciones.forEach(a => bodyHTML += '<li>' + a + '</li>');
+                bodyHTML += '</ul></div>';
+            }}
+            if (data.kpis && data.kpis.length) {{
+                bodyHTML += '<div class="info-section"><h4>KPIs Clave</h4><div class="info-stat-grid">';
+                data.kpis.forEach(k => {{
+                    bodyHTML += '<div class="info-stat"><div class="info-stat-label">' + k[0] + '</div><div class="info-stat-value">' + k[1] + '</div></div>';
+                }});
+                bodyHTML += '</div></div>';
+            }}
+
+            document.getElementById('modalBody').innerHTML = bodyHTML;
+            document.getElementById('infoModal').classList.add('show');
+            document.getElementById('modalBg').classList.add('show');
+        }}
+
+        function cerrarModal() {{
+            document.getElementById('infoModal').classList.remove('show');
+            document.getElementById('modalBg').classList.remove('show');
+        }}
+
+        document.addEventListener('keydown', function(e) {{
+            if (e.key === 'Escape') cerrarModal();
+        }});
+
+        // ============================================
+        // MERMAID + PAN/ZOOM
+        // ============================================
+        let panZoomInstance = null;
+
         mermaid.initialize({{
             startOnLoad: true,
+            securityLevel: 'loose',
             theme: 'dark',
             themeVariables: {{
                 primaryColor: '#1f2937',
@@ -1815,8 +2521,43 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
                 padding: 20,
                 nodeSpacing: 60,
                 rankSpacing: 60,
+                useMaxWidth: false,
             }}
         }});
+
+        // Esperar a que Mermaid termine de renderizar y aplicar pan/zoom
+        function inicializarZoom() {{
+            const svg = document.querySelector('#funnel-diagram svg');
+            if (!svg) {{
+                setTimeout(inicializarZoom, 200);
+                return;
+            }}
+            // Limpiar atributos que limitan tamaño
+            svg.removeAttribute('width');
+            svg.removeAttribute('height');
+            svg.removeAttribute('style');
+            svg.setAttribute('width', '100%');
+            svg.setAttribute('height', '100%');
+
+            panZoomInstance = svgPanZoom(svg, {{
+                zoomEnabled: true,
+                controlIconsEnabled: false,
+                fit: true,
+                center: true,
+                minZoom: 0.3,
+                maxZoom: 5,
+                zoomScaleSensitivity: 0.3,
+                mouseWheelZoomEnabled: true,
+                preventMouseEventsDefault: true,
+                dblClickZoomEnabled: false,
+            }});
+        }}
+        setTimeout(inicializarZoom, 500);
+
+        function zoomIn() {{ if (panZoomInstance) panZoomInstance.zoomBy(1.3); }}
+        function zoomOut() {{ if (panZoomInstance) panZoomInstance.zoomBy(0.77); }}
+        function zoomReset() {{ if (panZoomInstance) {{ panZoomInstance.resetZoom(); panZoomInstance.center(); }} }}
+        function zoomFit() {{ if (panZoomInstance) {{ panZoomInstance.fit(); panZoomInstance.center(); }} }}
 
         function downloadSVG() {{
             const svg = document.querySelector('.mermaid svg');
