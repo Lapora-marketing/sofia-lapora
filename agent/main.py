@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 
 from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
+from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, upsert_contacto
 from agent.providers import obtener_proveedor
 from agent.dashboard import router as dashboard_router
 from agent.reminders import scheduler_loop
@@ -113,6 +113,9 @@ async def webhook_handler(request: Request):
                 continue
 
             logger.info(f"Mensaje de {msg.telefono}: {msg.texto}")
+
+            # CRM: crear/actualizar contacto automaticamente
+            await upsert_contacto(msg.telefono)
 
             # Obtener historial ANTES de guardar el mensaje actual
             # (brain.py agrega el mensaje actual, evitando duplicados)

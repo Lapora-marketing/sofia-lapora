@@ -24,6 +24,7 @@ from agent.calendar_service import (
     listar_citas_proximas,
 )
 from agent.reminders import programar_recordatorio
+from agent.memory import incrementar_citas_agendadas, actualizar_contacto
 
 load_dotenv(override=True)
 logger = logging.getLogger("agentkit")
@@ -199,26 +200,42 @@ async def ejecutar_tool(nombre: str, input_data: dict, telefono_usuario: str) ->
             input_data.setdefault("telefono", telefono_usuario)
             resultado = agendar_cita(**input_data)
 
-            # Si la cita se agendo correctamente, programar recordatorio 1h antes
+            # Si la cita se agendo correctamente, programar recordatorio + CRM
             if resultado.get("exito") and resultado.get("fecha_iso"):
                 try:
                     fecha_cita = datetime.fromisoformat(resultado["fecha_iso"])
                     telefono_cliente = input_data.get("telefono", telefono_usuario)
                     nombre_doctor = input_data.get("nombre_doctor", "Doctor")
 
+                    # Programar recordatorio 1h antes
                     await programar_recordatorio(
                         telefono=telefono_cliente,
                         nombre_doctor=nombre_doctor,
                         evento_id=resultado.get("evento_id", ""),
                         fecha_cita=fecha_cita,
                     )
+
+                    # CRM: actualizar contacto con datos del doctor + estado
+                    datos_contacto = {
+                        "nombre": nombre_doctor,
+                        "email": input_data.get("email_doctor", ""),
+                        "especialidad": input_data.get("especialidad", ""),
+                        "ciudad": input_data.get("ciudad", ""),
+                    }
+                    # Limpiar campos vacios
+                    datos_contacto = {k: v for k, v in datos_contacto.items() if v}
+                    if datos_contacto:
+                        await actualizar_contacto(telefono_cliente, datos_contacto)
+
+                    # Incrementar contador de citas y cambiar estado
+                    await incrementar_citas_agendadas(telefono_cliente)
+
                     logger.info(
-                        f"Recordatorio programado para {telefono_cliente} "
-                        f"(1 hora antes de la cita)"
+                        f"Recordatorio programado + CRM actualizado para {telefono_cliente}"
                     )
                 except Exception as e:
                     # No fallar si el recordatorio falla
-                    logger.error(f"Error programando recordatorio: {e}", exc_info=True)
+                    logger.error(f"Error programando recordatorio/CRM: {e}", exc_info=True)
 
             return str(resultado)
 

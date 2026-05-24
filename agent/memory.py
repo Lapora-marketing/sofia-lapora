@@ -59,6 +59,127 @@ class Recordatorio(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class Contacto(Base):
+    """
+    Modelo de contacto / lead en el CRM.
+    Se crea automaticamente cuando alguien escribe por primera vez a SofIA.
+    """
+    __tablename__ = "contactos"
+
+    telefono: Mapped[str] = mapped_column(String(50), primary_key=True)
+
+    # Info personal
+    nombre: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    email: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+
+    # Info profesional (medico)
+    especialidad: Mapped[str] = mapped_column(String(100), default="", nullable=True)
+    ciudad: Mapped[str] = mapped_column(String(100), default="", nullable=True)
+    presencia_digital: Mapped[str] = mapped_column(String(50), default="", nullable=True)
+    volumen_pacientes: Mapped[str] = mapped_column(String(50), default="", nullable=True)
+    reto_principal: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    perdida_mensual: Mapped[str] = mapped_column(String(50), default="", nullable=True)
+
+    # Estado del lead
+    # nuevo | contactado | calificado | agendado | cliente | perdido
+    estado: Mapped[str] = mapped_column(String(50), default="nuevo", index=True)
+    fuente: Mapped[str] = mapped_column(String(100), default="whatsapp", nullable=True)
+    tags: Mapped[str] = mapped_column(Text, default="", nullable=True)  # separados por coma
+    notas: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+
+    # Metricas
+    total_mensajes: Mapped[int] = mapped_column(Integer, default=0)
+    citas_agendadas: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Timestamps
+    primer_contacto: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ultimo_contacto: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+async def upsert_contacto(telefono: str, datos: dict | None = None):
+    """
+    Crea o actualiza un contacto. Se llama automaticamente cuando llega un mensaje.
+
+    Args:
+        telefono: Numero de WhatsApp (clave primaria)
+        datos: Diccionario con campos a actualizar (opcional)
+    """
+    async with async_session() as session:
+        # Buscar contacto existente
+        query = select(Contacto).where(Contacto.telefono == telefono)
+        result = await session.execute(query)
+        contacto = result.scalar_one_or_none()
+
+        ahora = datetime.utcnow()
+
+        if contacto is None:
+            # Crear nuevo contacto
+            contacto = Contacto(
+                telefono=telefono,
+                primer_contacto=ahora,
+                ultimo_contacto=ahora,
+                total_mensajes=1,
+                estado="nuevo",
+                fuente="whatsapp",
+            )
+            if datos:
+                for key, value in datos.items():
+                    if hasattr(contacto, key) and value:
+                        setattr(contacto, key, value)
+            session.add(contacto)
+        else:
+            # Actualizar contacto existente
+            contacto.ultimo_contacto = ahora
+            contacto.total_mensajes = (contacto.total_mensajes or 0) + 1
+            if datos:
+                for key, value in datos.items():
+                    if hasattr(contacto, key) and value:
+                        setattr(contacto, key, value)
+
+        await session.commit()
+
+
+async def actualizar_contacto(telefono: str, datos: dict):
+    """Actualiza campos especificos de un contacto sin incrementar mensajes."""
+    async with async_session() as session:
+        query = select(Contacto).where(Contacto.telefono == telefono)
+        result = await session.execute(query)
+        contacto = result.scalar_one_or_none()
+
+        if contacto is None:
+            return False
+
+        for key, value in datos.items():
+            if hasattr(contacto, key):
+                setattr(contacto, key, value)
+
+        await session.commit()
+        return True
+
+
+async def incrementar_citas_agendadas(telefono: str):
+    """Incrementa el contador de citas agendadas y cambia estado a 'agendado'."""
+    async with async_session() as session:
+        query = select(Contacto).where(Contacto.telefono == telefono)
+        result = await session.execute(query)
+        contacto = result.scalar_one_or_none()
+
+        if contacto is None:
+            # Crear contacto si no existe
+            contacto = Contacto(
+                telefono=telefono,
+                citas_agendadas=1,
+                estado="agendado",
+                total_mensajes=1,
+            )
+            session.add(contacto)
+        else:
+            contacto.citas_agendadas = (contacto.citas_agendadas or 0) + 1
+            contacto.estado = "agendado"
+
+        await session.commit()
+
+
 async def inicializar_db():
     """Crea las tablas si no existen."""
     async with engine.begin() as conn:
