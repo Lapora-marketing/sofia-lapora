@@ -742,6 +742,8 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'),
         ("conversaciones", "Conversaciones", "/admin/conversaciones", total_convs,
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'),
+        ("funnel", "Funnel Lapora", "/admin/funnel", 0,
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'),
     ]
 
     links_html = ""
@@ -1544,3 +1546,297 @@ async def ver_conversacion(telefono: str, user: str = Depends(verificar_credenci
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+# ════════════════════════════════════════════════════════════
+# FUNNEL LAPORA — Organigrama estrategico
+# ════════════════════════════════════════════════════════════
+
+FUNNEL_MERMAID = """
+flowchart TD
+    INICIO([Doctor potencial<br/>no nos conoce]):::start
+
+    INICIO --> F1[FASE 1: CAPTACION<br/>Generar visibilidad]:::fase
+    F1 --> ORG[Contenido organico<br/>Instagram - TikTok - LinkedIn]
+    F1 --> PAID[Anuncios pagados<br/>Meta Ads + Google Ads]
+    F1 --> SEO[SEO Local Ibague-Tolima<br/>Bogota-Medellin-Cali]
+    F1 --> NET[Networking medico<br/>Camara Comercio - Eventos]
+    F1 --> REF1[Referidos de<br/>clientes actuales]:::referral
+
+    ORG --> ORG_TIPO{Tipo de contenido}
+    ORG_TIPO --> POV[POV de pacientes]
+    ORG_TIPO --> CASOS[Casos de exito]
+    ORG_TIPO --> EDU[Tips marketing<br/>para medicos]
+    ORG_TIPO --> AUTH[Autoridad medica<br/>Pizarra/Podcast]
+
+    POV --> WEB
+    CASOS --> WEB
+    EDU --> WEB
+    AUTH --> WEB
+    PAID --> WEB[lapora.studio<br/>Landing + Diagnostico]:::lapora
+    SEO --> WEB
+    NET --> WEB
+    REF1 --> WEB
+
+    WEB --> DIAG[Diagnostico Digital Gratis<br/>5 preguntas - 2 min]:::lapora
+    DIAG --> CALC[Calculo automatico:<br/>Perdida mensual estimada<br/>15M - 35M COP / mes]:::lapora
+    CALC --> CTA[CTA: Hablar con SofIA<br/>en WhatsApp]:::lapora
+
+    CTA --> SOFIA[FASE 2: SofIA WhatsApp<br/>+57 322 878 3019]:::fase
+    SOFIA --> CTX[SofIA recibe contexto<br/>del diagnostico]:::lapora
+    CTX --> CRM[Auto-creacion en CRM<br/>Lead Nuevo]:::lapora
+    CRM --> QUAL{FASE 3: Filtro<br/>Califica?}:::decision
+
+    QUAL -->|NO califica| NURT[Secuencia de nurturing<br/>Contenido educativo<br/>3 meses]:::recovery
+    QUAL -->|SI califica| AGENDA[Agendamiento automatico<br/>Google Calendar]:::lapora
+
+    NURT --> NURT_LOOP[Recalificacion<br/>cada 30 dias]:::recovery
+    NURT_LOOP -.->|Califica despues| QUAL
+
+    AGENDA --> REM1[Recordatorio SofIA<br/>1h antes - automatico]:::lapora
+    REM1 --> REUNION1[FASE 4: Diagnostico Profundo<br/>30 min - Zoom/Meet]:::fase
+    REUNION1 --> AUDIT[Auditoria completa:<br/>Google - Instagram - Web<br/>Reviews - Anuncios]
+    AUDIT --> PROP_REC[Recomendacion<br/>personalizada en vivo]
+
+    PROP_REC --> INT{Interesado en<br/>propuesta?}:::decision
+    INT -->|NO ahora| FOLLOWUP[Follow-up estrategico<br/>No agresivo - valor]:::recovery
+    FOLLOWUP -.->|Cambia de opinion| INT
+    INT -->|SI| PROP[FASE 5: Propuesta<br/>Personalizada]:::fase
+
+    PROP --> TIERS[3 tiers de pricing:<br/>Starter - Growth - Premium]
+    PROP --> CASOS_EX[Casos de exito<br/>Otaima - Nutrifit - etc.]
+    PROP --> GARANT[Garantia:<br/>Mes 1 sin resultados<br/>= ajuste sin costo]
+    TIERS --> CIERRE{Firma<br/>contrato?}:::decision
+    CASOS_EX --> CIERRE
+    GARANT --> CIERRE
+
+    CIERRE -->|NO| NURT_LONG[Nurturing largo plazo<br/>+ casos nuevos]:::recovery
+    NURT_LONG -.->|6 meses despues| INT
+    CIERRE -->|SI| PAGO[Anticipo 50 porciento<br/>USD 1.500 - 5.000]:::dinero
+
+    PAGO --> ONBOARD[FASE 6: Onboarding<br/>Cliente nuevo]:::fase
+    ONBOARD --> KICKOFF[Kickoff meeting<br/>Estrategia 30/60/90 dias]
+    KICKOFF --> SETUP[Setup tecnico:<br/>Bot IA - Accesos - Branding<br/>Pixel - Analytics]
+
+    SETUP --> EJEC[FASE 7: Ejecucion mensual]:::fase
+    EJEC --> CONTENIDO[Produccion contenido<br/>Reels - Posts - Videos]
+    EJEC --> ADS_GEST[Gestion anuncios<br/>Meta - Google - TikTok]
+    EJEC --> SEO_OPT[Optimizacion SEO<br/>Local + nacional]
+    EJEC --> BOT_LIVE[Bot IA WhatsApp<br/>activo 24/7]:::lapora
+    EJEC --> REPORTES[Reportes semanales<br/>KPIs - Costo por paciente]
+
+    REPORTES --> MES1{Mes 1 exitoso?<br/>Alcance - Leads - Citas}:::decision
+    MES1 -->|NO| AJUSTE[Ajuste sin costo<br/>Garantia Lapora]:::recovery
+    AJUSTE --> EJEC
+    MES1 -->|SI| PAGO_REC[Pago recurrente<br/>USD 1.000 - 4.000/mes]:::dinero
+
+    PAGO_REC --> RET[FASE 8: Retencion<br/>Mes 3+]:::fase
+    RET --> KPI_OK[KPIs estables<br/>ROAS 3x - 8x]
+    RET --> UPSELL[Upsell servicios:<br/>+ Bot IA - + SEO - + Web]:::dinero
+    RET --> CASOS_DOC[Documentar caso<br/>de exito en video]
+
+    CASOS_DOC --> AMB[FASE 9: Lapora Ambassador]:::referral
+    UPSELL --> AMB
+    KPI_OK --> AMB
+    AMB --> INCENT[Incentivos por referido:<br/>15 porciento comision o<br/>1 mes gratis]:::referral
+    AMB --> TESTIM[Testimonios en video<br/>para marketing]:::referral
+    INCENT --> NUEVO_REF[Nuevo doctor<br/>recomendado]:::referral
+    TESTIM --> ORG
+    NUEVO_REF -->|Cierra el ciclo| REF1
+
+    classDef start fill:#1f1f1f,stroke:#444,color:#fff,stroke-width:1px
+    classDef fase fill:#0d9488,stroke:#0d9488,color:#fff,stroke-width:2px,font-weight:bold
+    classDef lapora fill:#FF3B30,stroke:#FF3B30,color:#fff,stroke-width:2px,font-weight:bold
+    classDef dinero fill:#84cc16,stroke:#65a30d,color:#1a2e05,stroke-width:2px,font-weight:bold
+    classDef referral fill:#7c3aed,stroke:#7c3aed,color:#fff,stroke-width:2px,font-weight:bold
+    classDef decision fill:#f87171,stroke:#dc2626,color:#fff,stroke-width:2px,font-weight:bold
+    classDef recovery fill:#f59e0b,stroke:#d97706,color:#1a1a1a,stroke-width:2px,font-weight:bold
+"""
+
+
+@router.get("/funnel", response_class=HTMLResponse)
+async def vista_funnel(user: str = Depends(verificar_credenciales)):
+    """Vista del organigrama del funnel completo de Lapora."""
+    stats = await _obtener_stats()
+
+    # Las fases del funnel para la lista lateral
+    fases_html = """
+    <div class="info-list">
+        <div class="info-row"><span class="info-label">Fase 1</span><span class="info-value">Captacion (TOFU)</span></div>
+        <div class="info-row"><span class="info-label">Fase 2</span><span class="info-value">Diagnostico Digital</span></div>
+        <div class="info-row"><span class="info-label">Fase 3</span><span class="info-value">SofIA califica</span></div>
+        <div class="info-row"><span class="info-label">Fase 4</span><span class="info-value">Reunion 1</span></div>
+        <div class="info-row"><span class="info-label">Fase 5</span><span class="info-value">Propuesta</span></div>
+        <div class="info-row"><span class="info-label">Fase 6</span><span class="info-value">Onboarding</span></div>
+        <div class="info-row"><span class="info-label">Fase 7</span><span class="info-value">Ejecucion</span></div>
+        <div class="info-row"><span class="info-label">Fase 8</span><span class="info-value">Retencion</span></div>
+        <div class="info-row"><span class="info-label">Fase 9</span><span class="info-value">Referral Engine</span></div>
+    </div>
+    """
+
+    kpis_html = """
+    <div class="info-list">
+        <div class="info-row"><span class="info-label">Visitas/mes</span><span class="info-value">5.000+</span></div>
+        <div class="info-row"><span class="info-label">Conv. diagnostico</span><span class="info-value">>15%</span></div>
+        <div class="info-row"><span class="info-label">Calificados</span><span class="info-value">>40%</span></div>
+        <div class="info-row"><span class="info-label">Show rate</span><span class="info-value">>75%</span></div>
+        <div class="info-row"><span class="info-label">Win rate</span><span class="info-value">>30%</span></div>
+        <div class="info-row"><span class="info-label">Ticket promedio</span><span class="info-value">USD 2K/mes</span></div>
+        <div class="info-row"><span class="info-label">MRR objetivo</span><span class="info-value" style="color:#10b981">USD 136K/mes</span></div>
+    </div>
+    """
+
+    legend_html = """
+    <div class="info-list">
+        <div class="info-row"><span class="info-label">Lapora / SofIA</span><span class="badge" style="background:#FFE4E1;color:#991B1B"><span class="badge-dot" style="background:#FF3B30"></span>Rojo</span></div>
+        <div class="info-row"><span class="info-label">Fase clave</span><span class="badge" style="background:#CCFBF1;color:#115E59"><span class="badge-dot" style="background:#0d9488"></span>Teal</span></div>
+        <div class="info-row"><span class="info-label">Dinero entra</span><span class="badge" style="background:#ECFCCB;color:#3F6212"><span class="badge-dot" style="background:#84cc16"></span>Verde</span></div>
+        <div class="info-row"><span class="info-label">Referidos</span><span class="badge" style="background:#EDE9FE;color:#5B21B6"><span class="badge-dot" style="background:#7c3aed"></span>Purpura</span></div>
+        <div class="info-row"><span class="info-label">Decision</span><span class="badge" style="background:#FEE2E2;color:#991B1B"><span class="badge-dot" style="background:#f87171"></span>Coral</span></div>
+        <div class="info-row"><span class="info-label">Recuperacion</span><span class="badge" style="background:#FEF3C7;color:#92400E"><span class="badge-dot" style="background:#f59e0b"></span>Ambar</span></div>
+    </div>
+    """
+
+    html_header = """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Funnel Lapora - CRM</title>
+"""
+    html_body = f"""
+    {CSS_BASE}
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        .funnel-canvas {{
+            background: #0d0d0d;
+            border-radius: var(--radius-lg);
+            padding: 32px;
+            overflow: auto;
+            min-height: 70vh;
+            border: 1px solid #1f1f1f;
+        }}
+        .mermaid {{
+            background: transparent;
+            text-align: center;
+        }}
+        .funnel-grid {{
+            display: grid;
+            grid-template-columns: 1fr 280px;
+            gap: 20px;
+        }}
+        @media (max-width: 1100px) {{
+            .funnel-grid {{ grid-template-columns: 1fr; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="app">
+        {sidebar_html("funnel", stats)}
+        <main class="main">
+            <div class="page-header">
+                <div>
+                    <div class="page-title">Funnel Completo Lapora</div>
+                    <div class="page-subtitle">Prospectos &rarr; Calificacion &rarr; Clientes &rarr; Ventas &rarr; Referidos</div>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-secondary" onclick="window.print()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                        Imprimir
+                    </button>
+                    <button class="btn btn-primary" onclick="downloadSVG()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Descargar SVG
+                    </button>
+                </div>
+            </div>
+
+            <div class="funnel-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Diagrama del Funnel</div>
+                            <div class="card-subtitle">9 fases - Sistema completo de adquisicion</div>
+                        </div>
+                    </div>
+                    <div class="funnel-canvas">
+                        <div class="mermaid" id="funnel-diagram">
+{FUNNEL_MERMAID}
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Fases del Funnel</div>
+                        </div>
+                        {fases_html}
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">KPIs objetivo</div>
+                        </div>
+                        {kpis_html}
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Leyenda de colores</div>
+                        </div>
+                        {legend_html}
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        mermaid.initialize({{
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {{
+                primaryColor: '#1f2937',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#374151',
+                lineColor: '#6b7280',
+                secondaryColor: '#374151',
+                tertiaryColor: '#111827',
+                background: '#0d0d0d',
+                mainBkg: '#1f2937',
+                secondBkg: '#111827',
+                tertiaryBkg: '#1a1a1a',
+                fontFamily: 'Inter, sans-serif',
+                fontSize: '13px',
+            }},
+            flowchart: {{
+                curve: 'basis',
+                padding: 20,
+                nodeSpacing: 60,
+                rankSpacing: 60,
+            }}
+        }});
+
+        function downloadSVG() {{
+            const svg = document.querySelector('.mermaid svg');
+            if (!svg) {{
+                alert('Esperando que se renderice el diagrama...');
+                return;
+            }}
+            const serializer = new XMLSerializer();
+            const svgString = serializer.serializeToString(svg);
+            const blob = new Blob([svgString], {{ type: 'image/svg+xml' }});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'lapora-funnel.svg';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }}
+    </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_header + html_body)
