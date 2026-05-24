@@ -7,6 +7,7 @@ Funciona con cualquier proveedor (Meta, Twilio) gracias a la capa de providers.
 """
 
 import os
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -16,6 +17,8 @@ from dotenv import load_dotenv
 from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
+from agent.dashboard import router as dashboard_router
+from agent.reminders import scheduler_loop
 
 load_dotenv(override=True)
 
@@ -36,8 +39,12 @@ PORT = int(os.getenv("PORT", 8000))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inicializa la base de datos al arrancar el servidor."""
+    """Inicializa la base de datos y el scheduler al arrancar el servidor."""
     await inicializar_db()
+
+    # Iniciar el scheduler de recordatorios en background
+    scheduler_task = asyncio.create_task(scheduler_loop())
+
     logger.info("=" * 60)
     logger.info("  SofIA — Agente de Lapora arrancando...")
     logger.info("=" * 60)
@@ -45,8 +52,17 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Puerto: {PORT}")
     logger.info(f"  Proveedor WhatsApp: {proveedor.__class__.__name__}")
     logger.info(f"  Entorno: {ENVIRONMENT}")
+    logger.info(f"  Scheduler recordatorios: ACTIVO (revisa cada 5 min)")
     logger.info("=" * 60)
     yield
+
+    # Apagar el scheduler limpiamente
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("SofIA: servidor apagandose.")
 
 
@@ -56,6 +72,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Dashboard administrativo en /admin/conversaciones
+app.include_router(dashboard_router)
 
 
 @app.get("/")

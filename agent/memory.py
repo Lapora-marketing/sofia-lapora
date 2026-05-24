@@ -41,6 +41,24 @@ class Mensaje(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class Recordatorio(Base):
+    """
+    Modelo de recordatorio de cita en la base de datos.
+    Se programa cuando SofIA agenda una cita y se envia 1 hora antes
+    automaticamente por el scheduler.
+    """
+    __tablename__ = "recordatorios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    nombre_doctor: Mapped[str] = mapped_column(String(200))
+    evento_id: Mapped[str] = mapped_column(String(200))
+    fecha_cita: Mapped[datetime] = mapped_column(DateTime, index=True)
+    enviar_en: Mapped[datetime] = mapped_column(DateTime, index=True)  # fecha_cita - 1h
+    enviado: Mapped[int] = mapped_column(Integer, default=0)  # 0=pendiente, 1=enviado, -1=error
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 async def inicializar_db():
     """Crea las tablas si no existen."""
     async with engine.begin() as conn:

@@ -318,6 +318,7 @@ def agendar_cita(
             "evento_id": evento_creado.get("id"),
             "link_calendar": evento_creado.get("htmlLink"),
             "link_meet": "",  # No disponible para Gmail personal
+            "fecha_iso": dt_inicio.isoformat(),  # Para programar recordatorio
         }
 
     except HttpError as e:

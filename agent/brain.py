@@ -17,11 +17,13 @@ from pathlib import Path
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
+from datetime import datetime
 from agent.calendar_service import (
     verificar_disponibilidad,
     agendar_cita,
     listar_citas_proximas,
 )
+from agent.reminders import programar_recordatorio
 
 load_dotenv(override=True)
 logger = logging.getLogger("agentkit")
@@ -178,7 +180,7 @@ def obtener_mensaje_fallback() -> str:
 # EJECUCION DE TOOLS
 # ════════════════════════════════════════════════════════════
 
-def ejecutar_tool(nombre: str, input_data: dict, telefono_usuario: str) -> str:
+async def ejecutar_tool(nombre: str, input_data: dict, telefono_usuario: str) -> str:
     """
     Ejecuta una tool y retorna el resultado como string.
     """
@@ -196,6 +198,28 @@ def ejecutar_tool(nombre: str, input_data: dict, telefono_usuario: str) -> str:
             # Si no llega el telefono, usar el del usuario actual
             input_data.setdefault("telefono", telefono_usuario)
             resultado = agendar_cita(**input_data)
+
+            # Si la cita se agendo correctamente, programar recordatorio 1h antes
+            if resultado.get("exito") and resultado.get("fecha_iso"):
+                try:
+                    fecha_cita = datetime.fromisoformat(resultado["fecha_iso"])
+                    telefono_cliente = input_data.get("telefono", telefono_usuario)
+                    nombre_doctor = input_data.get("nombre_doctor", "Doctor")
+
+                    await programar_recordatorio(
+                        telefono=telefono_cliente,
+                        nombre_doctor=nombre_doctor,
+                        evento_id=resultado.get("evento_id", ""),
+                        fecha_cita=fecha_cita,
+                    )
+                    logger.info(
+                        f"Recordatorio programado para {telefono_cliente} "
+                        f"(1 hora antes de la cita)"
+                    )
+                except Exception as e:
+                    # No fallar si el recordatorio falla
+                    logger.error(f"Error programando recordatorio: {e}", exc_info=True)
+
             return str(resultado)
 
         elif nombre == "listar_citas_proximas":
@@ -281,7 +305,7 @@ async def generar_respuesta(
             tool_results = []
             for bloque in response.content:
                 if bloque.type == "tool_use":
-                    resultado = ejecutar_tool(
+                    resultado = await ejecutar_tool(
                         nombre=bloque.name,
                         input_data=bloque.input,
                         telefono_usuario=telefono_usuario,
