@@ -177,17 +177,59 @@ CSS_BASE = """
         display: grid;
         grid-template-columns: 260px 1fr;
         min-height: 100vh;
+        transition: grid-template-columns 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
+    .app.sidebar-collapsed {
+        grid-template-columns: 0 1fr;
+    }
+    .app.sidebar-collapsed .sidebar {
+        transform: translateX(-100%);
+        pointer-events: none;
+    }
+
+    /* BOTÓN HAMBURGUESA */
+    .menu-toggle {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        z-index: 1000;
+        width: 42px;
+        height: 42px;
+        border: none;
+        background: white;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: var(--shadow-md);
+        transition: var(--transition);
+        color: var(--gray-700);
+    }
+    .menu-toggle:hover {
+        background: var(--lapora-red-50);
+        border-color: var(--lapora-red);
+        color: var(--lapora-red);
+        transform: scale(1.05);
+    }
+    .menu-toggle:active { transform: scale(0.95); }
+    .menu-toggle svg { width: 22px; height: 22px; }
+    .menu-toggle .icon-open  { display: none; }
+    .menu-toggle .icon-close { display: block; }
+    .app.sidebar-collapsed .menu-toggle .icon-open  { display: block; }
+    .app.sidebar-collapsed .menu-toggle .icon-close { display: none; }
 
     /* SIDEBAR */
     .sidebar {
         background: white;
         border-right: 1px solid var(--gray-200);
-        padding: 24px 16px;
+        padding: 24px 16px 24px 64px;
         position: sticky;
         top: 0;
         height: 100vh;
         overflow-y: auto;
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .brand {
         display: flex;
@@ -759,6 +801,19 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
         links_html += f'<a href="{url}" class="{clase}">{icon}<span>{label}</span>{badge}</a>'
 
     return f"""
+    <button class="menu-toggle" id="menuToggle" aria-label="Mostrar u ocultar menu" type="button"
+            onclick="toggleSidebar()">
+        <svg class="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6"  x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+        <svg class="icon-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6"  x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+    </button>
     <aside class="sidebar">
         <div class="brand">
             <div class="brand-logo">L</div>
@@ -783,6 +838,29 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
             </a>
         </div>
     </aside>
+    <script>
+        // Toggle sidebar — persiste estado en localStorage + atajo Ctrl+B
+        (function() {{
+            var KEY = 'lapora.sidebarCollapsed';
+            var app = document.querySelector('.app');
+            if (!app) {{ return; }}
+            // Restaurar estado al cargar
+            if (localStorage.getItem(KEY) === '1') {{
+                app.classList.add('sidebar-collapsed');
+            }}
+            window.toggleSidebar = function() {{
+                app.classList.toggle('sidebar-collapsed');
+                localStorage.setItem(KEY, app.classList.contains('sidebar-collapsed') ? '1' : '0');
+            }};
+            // Atajo de teclado: Ctrl+B (Windows/Linux) o Cmd+B (Mac)
+            document.addEventListener('keydown', function(e) {{
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {{
+                    e.preventDefault();
+                    window.toggleSidebar();
+                }}
+            }});
+        }})();
+    </script>
     """
 
 
@@ -2769,7 +2847,7 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
     html_body = f"""
     {CSS_BASE}
 <body>
-  <div class="layout">
+  <div class="app">
     {sidebar_html("prospectos", stats)}
     <main class="main">
       <div style="padding:32px 40px;border-bottom:1px solid #e7e5e4;background:#fff;">
