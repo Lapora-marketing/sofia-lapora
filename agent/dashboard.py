@@ -25,9 +25,10 @@ import time as _time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, UploadFile, File
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from io import StringIO
 from sqlalchemy import select, func, or_
 
 from agent.memory import async_session, Mensaje, Contacto
@@ -2730,45 +2731,38 @@ def cargar_prospectos_csv() -> tuple[list[dict], dict[str, dict], dict[str, dict
 async def vista_prospectos(user: str = Depends(verificar_credenciales),
                             filtro: Optional[str] = None,
                             buscar: Optional[str] = None):
-    """Vista de prospectos de outreach con estado de respuesta."""
-    prospectos, envios, estados = cargar_prospectos_csv()
+    """Vista de prospectos de outreach con estado de respuesta (lee de PostgreSQL)."""
+    # Lazy import para evitar acoplar dashboard.py al modelo
+    from agent.memory import listar_prospectos, contar_prospectos_por_estado
 
-    # Enriquecer prospectos con estado
-    enriquecidos = []
-    for p in prospectos:
-        if p.get("email_verificado", "").upper() != "SI":
-            continue
-        pid = p["id"]
-        e = estados.get(pid, {})
-        env = envios.get(pid, {})
+    # Datos desde DB
+    prospectos_db = await listar_prospectos(estado=filtro, buscar=buscar, solo_verificados=True)
+    counts = await contar_prospectos_por_estado()
 
-        estado = e.get("estado") or ("enviado_sin_respuesta" if pid in envios else "no_enviado")
-        p["_estado"] = estado
-        p["_fecha_envio"] = (e.get("fecha_envio") or env.get("timestamp", ""))[:16]
-        p["_fecha_resp"] = (e.get("fecha_respuesta") or "")[:16]
-        p["_asunto_resp"] = e.get("asunto_respuesta", "")
-        p["_preview_resp"] = e.get("preview_respuesta", "")
-        p["_cupon"] = env.get("codigo_cupon", "")
-        enriquecidos.append(p)
+    # Enriquecer prospectos en formato dict para reusar el rendering
+    enriquecidos: list[dict] = []
+    for pr in prospectos_db:
+        enriquecidos.append({
+            "id": str(pr.id),
+            "nombre_negocio": pr.nombre_negocio or "",
+            "email": pr.email or "",
+            "telefono": pr.telefono or "",
+            "direccion": pr.direccion or "",
+            "especialidad": pr.especialidad or "",
+            "tipo": pr.tipo or "",
+            "_estado": pr.estado or "no_enviado",
+            "_fecha_envio": pr.fecha_envio.strftime("%Y-%m-%d %H:%M") if pr.fecha_envio else "",
+            "_fecha_resp": pr.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if pr.fecha_respuesta else "",
+            "_asunto_resp": pr.asunto_respuesta or "",
+            "_preview_resp": pr.preview_respuesta or "",
+            "_cupon": pr.cupon or "",
+        })
 
-    # Filtros
-    if filtro and filtro != "todos":
-        enriquecidos = [p for p in enriquecidos if p["_estado"] == filtro]
-    if buscar:
-        b = buscar.lower()
-        enriquecidos = [p for p in enriquecidos
-                        if b in p.get("nombre_negocio", "").lower()
-                        or b in p.get("email", "").lower()
-                        or b in p.get("especialidad", "").lower()]
-
-    # Contadores
-    todos_count = sum(1 for p in prospectos if p.get("email_verificado", "").upper() == "SI")
-    respondio = sum(1 for p in prospectos
-                    if p.get("email_verificado", "").upper() == "SI"
-                    and estados.get(p["id"], {}).get("estado") == "respondido")
-    enviados_count = len(envios)
-    sin_resp = enviados_count - respondio
-    no_env = todos_count - enviados_count
+    todos_count    = sum(counts.values()) or 0
+    respondio      = counts.get("respondido", 0) + counts.get("interesado", 0) + counts.get("cliente", 0)
+    enviados_count = todos_count - counts.get("no_enviado", 0)
+    sin_resp       = counts.get("enviado_sin_respuesta", 0)
+    no_env         = counts.get("no_enviado", 0)
 
     stats = {
         "total": todos_count,
@@ -2844,19 +2838,30 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Prospectos Outreach - Lapora CRM</title>
 """
+    boton_seed = (
+        '<a href="/admin/prospectos/seed" '
+        'style="background:#FF3B30;color:#fff;text-decoration:none;padding:10px 18px;'
+        'border-radius:10px;font-size:13px;font-weight:600;display:inline-block;'
+        'box-shadow:0 4px 12px rgba(255,59,48,0.25);">'
+        '↑ Cargar prospectos desde CSV</a>'
+    ) if todos_count == 0 else ""
+
     html_body = f"""
     {CSS_BASE}
 <body>
   <div class="app">
     {sidebar_html("prospectos", stats)}
     <main class="main">
-      <div style="padding:32px 40px;border-bottom:1px solid #e7e5e4;background:#fff;">
-        <h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#1c1917;">
-          Prospectos de Outreach
-        </h1>
-        <p style="margin:8px 0 0;color:#78716c;font-size:14px;">
-          Campaña de email a {todos_count} clínicas en Ibagué + 60 km · Actualizado automáticamente cada hora desde Gmail
-        </p>
+      <div style="padding:32px 40px;border-bottom:1px solid #e7e5e4;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;">
+        <div>
+          <h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#1c1917;">
+            Prospectos de Outreach
+          </h1>
+          <p style="margin:8px 0 0;color:#78716c;font-size:14px;">
+            Campaña de email a {todos_count} clínicas en Ibagué + 60 km · Lectura desde PostgreSQL
+          </p>
+        </div>
+        <div>{boton_seed}</div>
       </div>
 
       <div style="padding:24px 40px;background:#fafaf9;border-bottom:1px solid #e7e5e4;">
@@ -2867,6 +2872,12 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
           <button type="submit" style="background:#1c1917;color:#fff;border:none;padding:0 28px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Buscar</button>
         </form>
         <div>{chips}</div>
+      </div>
+
+      <div style="padding:24px 40px 0;">
+        <p style="background:#FFF1F0;color:#8B0000;padding:12px 16px;border-radius:10px;font-size:13px;border-left:4px solid #FF3B30;">
+          💡 ¿Faltan datos? Sube los CSVs en <a href="/admin/prospectos/seed" style="font-weight:700;">/admin/prospectos/seed</a> para cargar/actualizar la base.
+        </p>
       </div>
 
       <div style="padding:24px 40px;">
@@ -2897,3 +2908,197 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
 </body>
 </html>"""
     return HTMLResponse(content=html_header + html_body)
+
+
+# ════════════════════════════════════════════════════════════
+# SEED — Cargar prospectos desde CSVs subidos por el usuario
+# ════════════════════════════════════════════════════════════
+
+@router.get("/prospectos/seed", response_class=HTMLResponse)
+async def vista_seed_prospectos(user: str = Depends(verificar_credenciales)):
+    """Muestra formulario para subir las 3 CSVs de outreach."""
+    html_header = """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cargar Prospectos - Lapora CRM</title>
+"""
+    html_body = f"""
+    {CSS_BASE}
+<body>
+  <div class="app">
+    {sidebar_html("prospectos")}
+    <main class="main">
+      <div style="padding:32px 40px;border-bottom:1px solid #e7e5e4;background:#fff;">
+        <h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#1c1917;">
+          Cargar Prospectos desde CSV
+        </h1>
+        <p style="margin:8px 0 0;color:#78716c;font-size:14px;">
+          Sube los 3 archivos CSV de outreach. La base de datos se actualizará automáticamente.
+        </p>
+      </div>
+
+      <div style="padding:40px;">
+        <div style="max-width:680px;background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:32px;box-shadow:var(--shadow-md);">
+          <form method="post" action="/admin/prospectos/seed" enctype="multipart/form-data">
+
+            <div style="margin-bottom:20px;">
+              <label style="display:block;font-weight:700;font-size:14px;color:#1c1917;margin-bottom:6px;">
+                1. prospectos_200_reales.csv <span style="color:#FF3B30;">*</span>
+              </label>
+              <p style="font-size:12px;color:#78716c;margin-bottom:8px;">
+                Lista maestra de 200 prospectos con email_verificado
+              </p>
+              <input type="file" name="prospectos_csv" accept=".csv" required
+                     style="width:100%;padding:10px;border:1.5px dashed #e7e5e4;border-radius:10px;font-size:14px;cursor:pointer;">
+            </div>
+
+            <div style="margin-bottom:20px;">
+              <label style="display:block;font-weight:700;font-size:14px;color:#1c1917;margin-bottom:6px;">
+                2. envios_log.csv <span style="color:#78716c;font-weight:400;">(opcional)</span>
+              </label>
+              <p style="font-size:12px;color:#78716c;margin-bottom:8px;">
+                Log de emails enviados con cupones generados
+              </p>
+              <input type="file" name="envios_csv" accept=".csv"
+                     style="width:100%;padding:10px;border:1.5px dashed #e7e5e4;border-radius:10px;font-size:14px;cursor:pointer;">
+            </div>
+
+            <div style="margin-bottom:28px;">
+              <label style="display:block;font-weight:700;font-size:14px;color:#1c1917;margin-bottom:6px;">
+                3. estados_prospectos.csv <span style="color:#78716c;font-weight:400;">(opcional)</span>
+              </label>
+              <p style="font-size:12px;color:#78716c;margin-bottom:8px;">
+                Estados de respuesta detectados por el monitor automático
+              </p>
+              <input type="file" name="estados_csv" accept=".csv"
+                     style="width:100%;padding:10px;border:1.5px dashed #e7e5e4;border-radius:10px;font-size:14px;cursor:pointer;">
+            </div>
+
+            <button type="submit"
+                    style="width:100%;background:#FF3B30;color:#fff;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(255,59,48,0.3);transition:all 0.2s;">
+              ↑ Cargar a PostgreSQL
+            </button>
+
+            <p style="font-size:12px;color:#a8a29e;margin-top:16px;text-align:center;">
+              Los datos se hacen upsert (no se duplican). Puedes subir los mismos archivos varias veces sin problema.
+            </p>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html_header + html_body)
+
+
+def _parse_dt_csv(s: str) -> Optional[datetime]:
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(s[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+@router.post("/prospectos/seed", response_class=HTMLResponse)
+async def procesar_seed_prospectos(
+    user: str = Depends(verificar_credenciales),
+    prospectos_csv: UploadFile = File(...),
+    envios_csv: Optional[UploadFile] = File(None),
+    estados_csv: Optional[UploadFile] = File(None),
+):
+    """Procesa los CSVs subidos y hace upsert en la tabla prospectos."""
+    from agent.memory import async_session, Prospecto
+
+    # Leer contenido en memoria
+    contenido_p = (await prospectos_csv.read()).decode("utf-8", errors="replace")
+    rows_prospectos = list(csv.DictReader(StringIO(contenido_p)))
+
+    envios_map: dict[str, dict] = {}
+    if envios_csv and envios_csv.filename:
+        contenido_e = (await envios_csv.read()).decode("utf-8", errors="replace")
+        for row in csv.DictReader(StringIO(contenido_e)):
+            if row.get("estado") == "enviado":
+                envios_map[row["id"]] = row
+
+    estados_map: dict[str, dict] = {}
+    if estados_csv and estados_csv.filename:
+        contenido_s = (await estados_csv.read()).decode("utf-8", errors="replace")
+        for row in csv.DictReader(StringIO(contenido_s)):
+            estados_map[row["id"]] = row
+
+    # Upsert por email
+    creados = actualizados = 0
+    async with async_session() as session:
+        for p in rows_prospectos:
+            email_p = p.get("email", "").strip()
+            if not email_p:
+                continue
+
+            env = envios_map.get(p["id"], {})
+            est = estados_map.get(p["id"], {})
+            estado_outreach = est.get("estado") or ("enviado_sin_respuesta" if p["id"] in envios_map else "no_enviado")
+
+            datos = {
+                "nombre_negocio":     p.get("nombre_negocio", ""),
+                "nombre_doctor":      p.get("nombre_doctor", ""),
+                "especialidad":       p.get("especialidad", ""),
+                "email":              email_p,
+                "telefono":           p.get("telefono", ""),
+                "direccion":          p.get("direccion", ""),
+                "tipo":               p.get("tipo", ""),
+                "prioridad":          p.get("prioridad", "media"),
+                "website":            p.get("website", ""),
+                "email_verificado":   p.get("email_verificado", "PENDIENTE").upper(),
+                "estado":             estado_outreach,
+                "cupon":              env.get("codigo_cupon", ""),
+                "fecha_envio":        _parse_dt_csv(env.get("timestamp", "") or est.get("fecha_envio", "")),
+                "fecha_respuesta":    _parse_dt_csv(est.get("fecha_respuesta", "")),
+                "tipo_respuesta":     est.get("tipo_respuesta", ""),
+                "asunto_respuesta":   est.get("asunto_respuesta", "")[:300],
+                "preview_respuesta":  est.get("preview_respuesta", ""),
+                "notas":              est.get("notas", ""),
+            }
+
+            q = select(Prospecto).where(Prospecto.email == email_p)
+            existing = (await session.execute(q)).scalar_one_or_none()
+            ahora = datetime.utcnow()
+            if existing is None:
+                session.add(Prospecto(creado_en=ahora, actualizado_en=ahora, **datos))
+                creados += 1
+            else:
+                for k, v in datos.items():
+                    if v is not None and v != "":
+                        setattr(existing, k, v)
+                existing.actualizado_en = ahora
+                actualizados += 1
+        await session.commit()
+
+    # Invalidar cache si la endpoint anterior aun usa CSV cache (legacy)
+    _PROSPECTOS_CACHE["data"] = None
+
+    return HTMLResponse(f"""
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Carga completa</title>{CSS_BASE}</head>
+<body><div class="app">{sidebar_html("prospectos")}<main class="main">
+<div style="padding:40px;max-width:680px;margin:auto;">
+  <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:32px;text-align:center;">
+    <div style="font-size:48px;margin-bottom:16px;">✅</div>
+    <h1 style="margin:0;font-size:24px;color:#10B981;">Carga completa</h1>
+    <p style="margin:16px 0;color:#57534e;">
+      <strong style="color:#10B981;">{creados}</strong> nuevos · <strong style="color:#0066CC;">{actualizados}</strong> actualizados
+    </p>
+    <p style="color:#78716c;font-size:14px;">
+      Total procesados: {len(rows_prospectos)} prospectos · {len(envios_map)} envíos · {len(estados_map)} estados
+    </p>
+    <a href="/admin/prospectos"
+       style="display:inline-block;margin-top:24px;background:#1c1917;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:600;">
+      Ver prospectos
+    </a>
+  </div>
+</div>
+</main></div></body></html>""")

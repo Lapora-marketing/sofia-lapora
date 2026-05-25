@@ -96,6 +96,107 @@ class Contacto(Base):
     ultimo_contacto: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class Prospecto(Base):
+    """
+    Modelo de prospecto de outreach (clinicas/consultorios a los que enviamos email).
+    Diferente de Contacto (que es WhatsApp). Se cruza con Contacto via telefono.
+    """
+    __tablename__ = "prospectos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Datos base
+    nombre_negocio:   Mapped[str] = mapped_column(String(200), index=True)
+    nombre_doctor:    Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    especialidad:     Mapped[str] = mapped_column(String(150), default="", index=True)
+    email:            Mapped[str] = mapped_column(String(200), default="", index=True)
+    telefono:         Mapped[str] = mapped_column(String(50), default="", index=True)
+    direccion:        Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    tipo:             Mapped[str] = mapped_column(String(50), default="", nullable=True)
+    prioridad:        Mapped[str] = mapped_column(String(20), default="media", nullable=True)
+    website:          Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    email_verificado: Mapped[str] = mapped_column(String(20), default="PENDIENTE")  # SI / PENDIENTE
+
+    # Estado de la campaña
+    # no_enviado | enviado_sin_respuesta | respondido | interesado | cliente | rebotado
+    estado:           Mapped[str] = mapped_column(String(40), default="no_enviado", index=True)
+    cupon:            Mapped[str] = mapped_column(String(30), default="", nullable=True)
+    fecha_envio:      Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    fecha_respuesta:  Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    tipo_respuesta:   Mapped[str] = mapped_column(String(20), default="", nullable=True)  # email | whatsapp
+    asunto_respuesta: Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    preview_respuesta: Mapped[str] = mapped_column(Text, default="", nullable=True)
+    notas:            Mapped[Text] = mapped_column(Text, default="", nullable=True)
+
+    # Timestamps
+    creado_en:        Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    actualizado_en:   Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+async def upsert_prospecto(datos: dict) -> Prospecto:
+    """Crea o actualiza un prospecto. Hace match por email o telefono."""
+    async with async_session() as session:
+        prospecto = None
+        if datos.get("email"):
+            q = select(Prospecto).where(Prospecto.email == datos["email"])
+            prospecto = (await session.execute(q)).scalar_one_or_none()
+        if not prospecto and datos.get("telefono"):
+            q = select(Prospecto).where(Prospecto.telefono == datos["telefono"])
+            prospecto = (await session.execute(q)).scalar_one_or_none()
+
+        ahora = datetime.utcnow()
+        if prospecto is None:
+            prospecto = Prospecto(creado_en=ahora, actualizado_en=ahora)
+            for k, v in datos.items():
+                if hasattr(prospecto, k) and v is not None:
+                    setattr(prospecto, k, v)
+            session.add(prospecto)
+        else:
+            for k, v in datos.items():
+                if hasattr(prospecto, k) and v is not None:
+                    setattr(prospecto, k, v)
+            prospecto.actualizado_en = ahora
+
+        await session.commit()
+        await session.refresh(prospecto)
+        return prospecto
+
+
+async def listar_prospectos(estado: str | None = None,
+                             buscar: str | None = None,
+                             solo_verificados: bool = True) -> list[Prospecto]:
+    """Lista prospectos con filtros opcionales."""
+    from sqlalchemy import or_
+    async with async_session() as session:
+        q = select(Prospecto)
+        if solo_verificados:
+            q = q.where(Prospecto.email_verificado == "SI")
+        if estado and estado != "todos":
+            q = q.where(Prospecto.estado == estado)
+        if buscar:
+            p = f"%{buscar}%"
+            q = q.where(or_(
+                Prospecto.nombre_negocio.ilike(p),
+                Prospecto.email.ilike(p),
+                Prospecto.especialidad.ilike(p),
+            ))
+        q = q.order_by(Prospecto.estado.asc(), Prospecto.nombre_negocio.asc())
+        return list((await session.execute(q)).scalars().all())
+
+
+async def contar_prospectos_por_estado() -> dict[str, int]:
+    """Devuelve {estado: count} para todos los prospectos verificados."""
+    from sqlalchemy import func
+    async with async_session() as session:
+        q = (
+            select(Prospecto.estado, func.count(Prospecto.id))
+            .where(Prospecto.email_verificado == "SI")
+            .group_by(Prospecto.estado)
+        )
+        rows = (await session.execute(q)).all()
+        return {estado: count for estado, count in rows}
+
+
 async def upsert_contacto(telefono: str, datos: dict | None = None):
     """
     Crea o actualiza un contacto. Se llama automaticamente cuando llega un mensaje.
