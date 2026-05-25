@@ -17,9 +17,11 @@ Endpoints:
 """
 
 import os
+import csv
 import secrets
 import hashlib
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Form
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -744,6 +746,8 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'),
         ("funnel", "Funnel Lapora", "/admin/funnel", 0,
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'),
+        ("prospectos", "Prospectos", "/admin/prospectos", 0,
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="9" y1="14" x2="13" y2="14"/></svg>'),
     ]
 
     links_html = ""
@@ -2578,6 +2582,211 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
             URL.revokeObjectURL(url);
         }}
     </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_header + html_body)
+
+
+# ════════════════════════════════════════════════════════════
+# PROSPECTOS — CRM de outreach con estado de respuestas
+# ════════════════════════════════════════════════════════════
+
+PROSPECTOS_DIR = Path(__file__).parent.parent / "data" / "prospectos"
+
+
+def cargar_prospectos_csv() -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+    """Retorna (prospectos, envios_por_id, estados_por_id)."""
+    prospectos, envios, estados = [], {}, {}
+
+    p_csv = PROSPECTOS_DIR / "prospectos_200_reales.csv"
+    if p_csv.exists():
+        with open(p_csv, "r", encoding="utf-8") as f:
+            prospectos = list(csv.DictReader(f))
+
+    e_csv = PROSPECTOS_DIR / "envios_log.csv"
+    if e_csv.exists():
+        with open(e_csv, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if row.get("estado") == "enviado":
+                    envios[row["id"]] = row
+
+    s_csv = PROSPECTOS_DIR / "estados_prospectos.csv"
+    if s_csv.exists():
+        with open(s_csv, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                estados[row["id"]] = row
+
+    return prospectos, envios, estados
+
+
+@router.get("/prospectos", response_class=HTMLResponse)
+async def vista_prospectos(user: str = Depends(verificar_credenciales),
+                            filtro: Optional[str] = None,
+                            buscar: Optional[str] = None):
+    """Vista de prospectos de outreach con estado de respuesta."""
+    prospectos, envios, estados = cargar_prospectos_csv()
+
+    # Enriquecer prospectos con estado
+    enriquecidos = []
+    for p in prospectos:
+        if p.get("email_verificado", "").upper() != "SI":
+            continue
+        pid = p["id"]
+        e = estados.get(pid, {})
+        env = envios.get(pid, {})
+
+        estado = e.get("estado") or ("enviado_sin_respuesta" if pid in envios else "no_enviado")
+        p["_estado"] = estado
+        p["_fecha_envio"] = (e.get("fecha_envio") or env.get("timestamp", ""))[:16]
+        p["_fecha_resp"] = (e.get("fecha_respuesta") or "")[:16]
+        p["_asunto_resp"] = e.get("asunto_respuesta", "")
+        p["_preview_resp"] = e.get("preview_respuesta", "")
+        p["_cupon"] = env.get("codigo_cupon", "")
+        enriquecidos.append(p)
+
+    # Filtros
+    if filtro and filtro != "todos":
+        enriquecidos = [p for p in enriquecidos if p["_estado"] == filtro]
+    if buscar:
+        b = buscar.lower()
+        enriquecidos = [p for p in enriquecidos
+                        if b in p.get("nombre_negocio", "").lower()
+                        or b in p.get("email", "").lower()
+                        or b in p.get("especialidad", "").lower()]
+
+    # Contadores
+    todos_count = sum(1 for p in prospectos if p.get("email_verificado", "").upper() == "SI")
+    respondio = sum(1 for p in prospectos
+                    if p.get("email_verificado", "").upper() == "SI"
+                    and estados.get(p["id"], {}).get("estado") == "respondido")
+    enviados_count = len(envios)
+    sin_resp = enviados_count - respondio
+    no_env = todos_count - enviados_count
+
+    stats = {
+        "total": todos_count,
+        "enviados": enviados_count,
+        "respondieron": respondio,
+        "pendientes": no_env,
+    }
+
+    label_estado = {
+        "respondido": ("Respondió", "#10B981", "✉"),
+        "interesado": ("Interesado", "#10B981", "✓"),
+        "cliente": ("Cliente", "#10B981", "★"),
+        "enviado_sin_respuesta": ("Enviado", "#F59E0B", "⏳"),
+        "no_enviado": ("Pendiente", "#78716C", "○"),
+        "rebotado": ("Rebotó", "#EF4444", "✗"),
+    }
+
+    filas_html = ""
+    for p in enriquecidos:
+        est = p["_estado"]
+        label, color, icono = label_estado.get(est, (est, "#78716C", "•"))
+        bg = {
+            "respondido": "rgba(16,185,129,0.06)",
+            "interesado": "rgba(16,185,129,0.10)",
+            "cliente": "rgba(16,185,129,0.14)",
+            "enviado_sin_respuesta": "rgba(245,158,11,0.04)",
+            "rebotado": "rgba(239,68,68,0.05)",
+        }.get(est, "transparent")
+
+        nombre = (p.get("nombre_negocio") or "").replace("<", "&lt;")
+        email = (p.get("email") or "").replace("<", "&lt;")
+        tel = p.get("telefono", "")
+        direccion = (p.get("direccion") or "").replace("<", "&lt;")[:60]
+        tipo = p.get("tipo", "")
+        preview = (p.get("_preview_resp") or p.get("_asunto_resp") or "")[:80].replace("<", "&lt;")
+        cupon = p.get("_cupon", "") or "—"
+
+        filas_html += f"""
+        <tr style="background:{bg}">
+          <td style="padding:14px 12px;font-weight:600;color:#1c1917;">{nombre}</td>
+          <td style="padding:14px 12px;">
+            <span style="background:{color}15;color:{color};padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;">
+              {icono} {label}
+            </span>
+          </td>
+          <td style="padding:14px 12px;"><a href="mailto:{email}" style="color:#0066CC;font-size:13px;">{email}</a></td>
+          <td style="padding:14px 12px;font-family:monospace;font-size:13px;color:#57534e;">{tel}</td>
+          <td style="padding:14px 12px;font-size:13px;color:#57534e;">{direccion}</td>
+          <td style="padding:14px 12px;font-family:monospace;font-size:12px;font-weight:700;color:#FF3B30;">{cupon}</td>
+          <td style="padding:14px 12px;font-size:12px;color:#78716c;font-style:italic;">{preview}</td>
+        </tr>"""
+
+    # Filtros (botones)
+    filtros_disponibles = [
+        ("todos", f"Todos ({todos_count})", "#1c1917"),
+        ("respondido", f"Respondieron ({respondio})", "#10B981"),
+        ("enviado_sin_respuesta", f"Enviados ({sin_resp})", "#F59E0B"),
+        ("no_enviado", f"Pendientes ({no_env})", "#78716C"),
+    ]
+    chips = ""
+    for key, lab, col in filtros_disponibles:
+        activo = filtro == key or (not filtro and key == "todos")
+        bg_chip = col if activo else "transparent"
+        txt_chip = "#fff" if activo else col
+        chips += f"""<a href="/admin/prospectos?filtro={key}" style="background:{bg_chip};color:{txt_chip};border:1.5px solid {col};padding:8px 16px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;display:inline-block;margin-right:8px;margin-bottom:8px;">{lab}</a>"""
+
+    busqueda_val = (buscar or "").replace('"', '&quot;')
+
+    html_header = """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prospectos Outreach - Lapora CRM</title>
+"""
+    html_body = f"""
+    {CSS_BASE}
+<body>
+  <div class="layout">
+    {sidebar_html("prospectos", stats)}
+    <main class="main">
+      <div style="padding:32px 40px;border-bottom:1px solid #e7e5e4;background:#fff;">
+        <h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#1c1917;">
+          Prospectos de Outreach
+        </h1>
+        <p style="margin:8px 0 0;color:#78716c;font-size:14px;">
+          Campaña de email a {todos_count} clínicas en Ibagué + 60 km · Actualizado automáticamente cada hora desde Gmail
+        </p>
+      </div>
+
+      <div style="padding:24px 40px;background:#fafaf9;border-bottom:1px solid #e7e5e4;">
+        <form method="get" action="/admin/prospectos" style="display:flex;gap:12px;margin-bottom:16px;">
+          <input type="text" name="buscar" value="{busqueda_val}" placeholder="Buscar por nombre, email o especialidad..."
+                 style="flex:1;padding:12px 16px;border:1.5px solid #e7e5e4;border-radius:10px;font-size:14px;outline:none;"
+                 onfocus="this.style.borderColor='#FF3B30'" onblur="this.style.borderColor='#e7e5e4'">
+          <button type="submit" style="background:#1c1917;color:#fff;border:none;padding:0 28px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Buscar</button>
+        </form>
+        <div>{chips}</div>
+      </div>
+
+      <div style="padding:24px 40px;">
+        <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="background:#1c1917;color:#fff;">
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Negocio</th>
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Estado</th>
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Email</th>
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Teléfono</th>
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Dirección</th>
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Cupón</th>
+                <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Última actividad</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas_html if filas_html else '<tr><td colspan="7" style="padding:60px;text-align:center;color:#78716c;font-style:italic;">No hay prospectos para mostrar con este filtro</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        <p style="text-align:center;color:#a8a29e;font-size:12px;margin-top:16px;">
+          {len(enriquecidos)} prospectos mostrados · Datos actualizados {datetime.now().strftime('%d/%m/%Y %H:%M')}
+        </p>
+      </div>
+    </main>
+  </div>
 </body>
 </html>"""
     return HTMLResponse(content=html_header + html_body)
