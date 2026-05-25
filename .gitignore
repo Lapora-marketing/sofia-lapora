@@ -60,3 +60,9 @@ node_modules/
 
 # 🤖 Claude Code config local
 .claude/settings.local.json
+
+
+# 🔒 Datos sensibles de prospectos (PII de clientes potenciales)
+data/prospectos/*.csv
+data/prospectos/*.xlsx
+

@@ -18,8 +18,10 @@ Endpoints:
 
 import os
 import csv
+import html
 import secrets
 import hashlib
+import time as _time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -2593,29 +2595,56 @@ async def vista_funnel(user: str = Depends(verificar_credenciales)):
 
 PROSPECTOS_DIR = Path(__file__).parent.parent / "data" / "prospectos"
 
+# Cache con TTL para evitar leer CSV en cada request
+_PROSPECTOS_CACHE: dict = {"data": None, "loaded_at": 0, "mtimes": {}}
+_PROSPECTOS_CACHE_TTL_SEC = 60  # Refresca cada 60s o si cambia mtime
+
+
+def _mtime_or_zero(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
 
 def cargar_prospectos_csv() -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
-    """Retorna (prospectos, envios_por_id, estados_por_id)."""
-    prospectos, envios, estados = [], {}, {}
-
+    """Retorna (prospectos, envios_por_id, estados_por_id) con cache TTL 60s."""
     p_csv = PROSPECTOS_DIR / "prospectos_200_reales.csv"
+    e_csv = PROSPECTOS_DIR / "envios_log.csv"
+    s_csv = PROSPECTOS_DIR / "estados_prospectos.csv"
+
+    ahora = _time.time()
+    mtimes_actuales = {
+        "p": _mtime_or_zero(p_csv),
+        "e": _mtime_or_zero(e_csv),
+        "s": _mtime_or_zero(s_csv),
+    }
+
+    cache_valido = (
+        _PROSPECTOS_CACHE["data"] is not None
+        and (ahora - _PROSPECTOS_CACHE["loaded_at"]) < _PROSPECTOS_CACHE_TTL_SEC
+        and _PROSPECTOS_CACHE["mtimes"] == mtimes_actuales
+    )
+    if cache_valido:
+        return _PROSPECTOS_CACHE["data"]
+
+    prospectos, envios, estados = [], {}, {}
     if p_csv.exists():
         with open(p_csv, "r", encoding="utf-8") as f:
             prospectos = list(csv.DictReader(f))
-
-    e_csv = PROSPECTOS_DIR / "envios_log.csv"
     if e_csv.exists():
         with open(e_csv, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 if row.get("estado") == "enviado":
                     envios[row["id"]] = row
-
-    s_csv = PROSPECTOS_DIR / "estados_prospectos.csv"
     if s_csv.exists():
         with open(s_csv, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 estados[row["id"]] = row
 
+    _PROSPECTOS_CACHE["data"] = (prospectos, envios, estados)
+    _PROSPECTOS_CACHE["loaded_at"] = ahora
+    _PROSPECTOS_CACHE["mtimes"] = mtimes_actuales
     return prospectos, envios, estados
 
 
@@ -2691,13 +2720,13 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
             "rebotado": "rgba(239,68,68,0.05)",
         }.get(est, "transparent")
 
-        nombre = (p.get("nombre_negocio") or "").replace("<", "&lt;")
-        email = (p.get("email") or "").replace("<", "&lt;")
-        tel = p.get("telefono", "")
-        direccion = (p.get("direccion") or "").replace("<", "&lt;")[:60]
-        tipo = p.get("tipo", "")
-        preview = (p.get("_preview_resp") or p.get("_asunto_resp") or "")[:80].replace("<", "&lt;")
-        cupon = p.get("_cupon", "") or "—"
+        # Escape completo contra XSS (<, >, &, ", ')
+        nombre    = html.escape((p.get("nombre_negocio") or ""), quote=True)
+        email     = html.escape((p.get("email") or ""), quote=True)
+        tel       = html.escape((p.get("telefono") or ""), quote=True)
+        direccion = html.escape((p.get("direccion") or "")[:60], quote=True)
+        preview   = html.escape((p.get("_preview_resp") or p.get("_asunto_resp") or "")[:80], quote=True)
+        cupon     = html.escape((p.get("_cupon") or "—"), quote=True)
 
         filas_html += f"""
         <tr style="background:{bg}">
@@ -2728,7 +2757,7 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
         txt_chip = "#fff" if activo else col
         chips += f"""<a href="/admin/prospectos?filtro={key}" style="background:{bg_chip};color:{txt_chip};border:1.5px solid {col};padding:8px 16px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;display:inline-block;margin-right:8px;margin-bottom:8px;">{lab}</a>"""
 
-    busqueda_val = (buscar or "").replace('"', '&quot;')
+    busqueda_val = html.escape(buscar or "", quote=True)
 
     html_header = """<!DOCTYPE html>
 <html lang="es">
