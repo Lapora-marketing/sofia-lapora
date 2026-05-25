@@ -29,6 +29,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Up
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from io import StringIO
+import re as _re
+import hashlib as _hashlib
+import httpx as _httpx
 from sqlalchemy import select, func, or_
 
 from agent.memory import async_session, Mensaje, Contacto
@@ -2838,13 +2841,29 @@ async def vista_prospectos(user: str = Depends(verificar_credenciales),
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Prospectos Outreach - Lapora CRM</title>
 """
-    boton_seed = (
-        '<a href="/admin/prospectos/seed" '
-        'style="background:#FF3B30;color:#fff;text-decoration:none;padding:10px 18px;'
-        'border-radius:10px;font-size:13px;font-weight:600;display:inline-block;'
-        'box-shadow:0 4px 12px rgba(255,59,48,0.25);">'
-        '↑ Cargar prospectos desde CSV</a>'
-    ) if todos_count == 0 else ""
+    if todos_count == 0:
+        boton_seed = (
+            '<a href="/admin/prospectos/seed" '
+            'style="background:#FF3B30;color:#fff;text-decoration:none;padding:10px 18px;'
+            'border-radius:10px;font-size:13px;font-weight:600;display:inline-block;'
+            'box-shadow:0 4px 12px rgba(255,59,48,0.25);">'
+            '↑ Cargar prospectos desde CSV</a>'
+        )
+    else:
+        boton_seed = (
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;">'
+            '<a href="/admin/prospectos/whatsapp" '
+            'style="background:#25D366;color:#fff;text-decoration:none;padding:10px 18px;'
+            'border-radius:10px;font-size:13px;font-weight:600;display:inline-block;'
+            'box-shadow:0 4px 12px rgba(37,211,102,0.25);">'
+            '📲 Enviar WhatsApp a respondieron</a>'
+            '<a href="/admin/prospectos/seed" '
+            'style="background:transparent;color:#1c1917;text-decoration:none;padding:10px 18px;'
+            'border-radius:10px;font-size:13px;font-weight:600;display:inline-block;'
+            'border:1.5px solid #e7e5e4;">'
+            '↑ Recargar CSVs</a>'
+            '</div>'
+        )
 
     html_body = f"""
     {CSS_BASE}
@@ -3099,6 +3118,269 @@ async def procesar_seed_prospectos(
        style="display:inline-block;margin-top:24px;background:#1c1917;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:600;">
       Ver prospectos
     </a>
+  </div>
+</div>
+</main></div></body></html>""")
+
+
+# ════════════════════════════════════════════════════════════
+# WHATSAPP OUTREACH — Enviar mensaje persuasivo via Meta API
+# ════════════════════════════════════════════════════════════
+
+WA_SENT_MARKER = "WA-SENT:"
+
+
+def _wa_normalizar_telefono(tel: str) -> Optional[str]:
+    """Convierte cualquier formato a 57XXXXXXXXXX listo para Meta (sin +)."""
+    if not tel:
+        return None
+    digitos = _re.sub(r"\D", "", tel)
+    if digitos.startswith("57") and len(digitos) > 10:
+        digitos = digitos[2:]
+    if len(digitos) != 10 or not digitos.startswith("3"):
+        return None
+    return f"57{digitos}"
+
+
+def _wa_generar_cupon(nombre: str, pid: int) -> str:
+    prefijo = "".join(c for c in (nombre or "").upper() if c.isalpha())[:3] or "LAP"
+    h = _hashlib.md5(f"lapora-wa-{pid}-{nombre}".encode()).hexdigest().upper()
+    return f"LAP{prefijo}{h[:5]}"
+
+
+def _wa_construir_mensaje(nombre_doctor: str, nombre_negocio: str, cupon: str) -> str:
+    return (
+        f"Hola {nombre_doctor or 'Doctor'}, soy Michael de *Lapora Marketing Digital* 👋\n\n"
+        f"Te escribo por aquí porque vi que respondiste al email sobre IA para {nombre_negocio}. ¡Excelente!\n\n"
+        f"Para que veas rápido cómo funciona:\n"
+        f"💰 *Ganar 2-3x más* con pacientes atraídos por IA\n"
+        f"⏰ O *trabajar 70% menos* con un bot que agenda solo\n\n"
+        f"Tu cupón único de *15% OFF* sigue activo:\n"
+        f"🎁 `{cupon}`\n\n"
+        f"Diagnóstico gratis (2 min): https://lapora.studio?cupon={cupon}\n\n"
+        f"¿Te organizo una llamada de 15 min esta semana? Cuéntame qué día te queda mejor."
+    )
+
+
+async def _wa_enviar_via_meta(telefono: str, mensaje: str) -> tuple[bool, str]:
+    """Envia via Meta Cloud API usando las credenciales del bot."""
+    token = os.getenv("META_ACCESS_TOKEN", "")
+    phone_id = os.getenv("META_PHONE_NUMBER_ID", "")
+    if not token or not phone_id:
+        return False, "Faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID en Railway"
+    url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": telefono,
+        "type": "text",
+        "text": {"preview_url": True, "body": mensaje},
+    }
+    try:
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(url, json=payload, headers=headers)
+        if r.status_code == 200:
+            return True, r.json().get("messages", [{}])[0].get("id", "OK")
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
+@router.get("/prospectos/whatsapp", response_class=HTMLResponse)
+async def vista_whatsapp_outreach(user: str = Depends(verificar_credenciales)):
+    """Muestra prospectos que respondieron y permite enviar WhatsApp."""
+    from agent.memory import Prospecto
+
+    async with async_session() as session:
+        q = (
+            select(Prospecto)
+            .where(Prospecto.estado.in_(["respondido", "interesado"]))
+            .where(Prospecto.email_verificado == "SI")
+            .order_by(Prospecto.fecha_respuesta.desc().nulls_last())
+        )
+        prospectos = list((await session.execute(q)).scalars().all())
+
+    # Clasificar
+    pendientes_send: list = []
+    ya_enviados: list = []
+    sin_telefono: list = []
+
+    for p in prospectos:
+        tel_norm = _wa_normalizar_telefono(p.telefono or "")
+        if not tel_norm:
+            sin_telefono.append(p)
+        elif WA_SENT_MARKER in (p.notas or ""):
+            ya_enviados.append(p)
+        else:
+            pendientes_send.append(p)
+
+    filas_html = ""
+    for p in pendientes_send:
+        tel_norm = _wa_normalizar_telefono(p.telefono or "") or ""
+        cupon = p.cupon or _wa_generar_cupon(p.nombre_negocio or "", p.id)
+        nombre = html.escape(p.nombre_negocio or "", quote=True)
+        doctor = html.escape(p.nombre_doctor or "", quote=True)
+        filas_html += f"""
+        <tr>
+          <td style="padding:14px 12px;font-weight:600;">{nombre}<div style="font-size:12px;color:#78716c;font-weight:400;">{doctor}</div></td>
+          <td style="padding:14px 12px;font-family:monospace;font-size:13px;color:#57534e;">+{tel_norm}</td>
+          <td style="padding:14px 12px;font-family:monospace;font-size:12px;font-weight:700;color:#FF3B30;">{cupon}</td>
+          <td style="padding:14px 12px;">
+            <form method="post" action="/admin/prospectos/whatsapp" style="margin:0;">
+              <input type="hidden" name="prospecto_id" value="{p.id}">
+              <button type="submit" name="action" value="enviar_uno"
+                      style="background:#25D366;color:#fff;border:none;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">
+                📲 Enviar
+              </button>
+            </form>
+          </td>
+        </tr>"""
+
+    if not pendientes_send:
+        filas_html = '<tr><td colspan="4" style="padding:60px;text-align:center;color:#78716c;font-style:italic;">No hay prospectos pendientes de WhatsApp 👌</td></tr>'
+
+    bulk_button = ""
+    if pendientes_send:
+        bulk_button = f"""
+        <form method="post" action="/admin/prospectos/whatsapp" style="margin:0;display:inline-block;"
+              onsubmit="return confirm('¿Enviar WhatsApp a los {len(pendientes_send)} prospectos pendientes?');">
+          <button type="submit" name="action" value="enviar_todos"
+                  style="background:#25D366;color:#fff;border:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(37,211,102,0.3);">
+            📲 Enviar a los {len(pendientes_send)} pendientes
+          </button>
+        </form>"""
+
+    html_header = """<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp Outreach - Lapora CRM</title>"""
+    html_body = f"""
+    {CSS_BASE}
+<body>
+  <div class="app">
+    {sidebar_html("prospectos")}
+    <main class="main">
+      <div style="padding:32px 40px;border-bottom:1px solid #e7e5e4;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;">
+        <div>
+          <h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#1c1917;">
+            WhatsApp Outreach Manual
+          </h1>
+          <p style="margin:8px 0 0;color:#78716c;font-size:14px;">
+            Envía mensaje persuasivo via SofIA (+57 322 878 3019) a prospectos que respondieron al email
+          </p>
+        </div>
+        <div>{bulk_button}</div>
+      </div>
+
+      <div style="padding:24px 40px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+        <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:20px;">
+          <div style="font-size:12px;color:#78716c;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Pendientes</div>
+          <div style="font-size:32px;font-weight:800;color:#25D366;margin-top:6px;">{len(pendientes_send)}</div>
+          <div style="font-size:12px;color:#78716c;margin-top:4px;">listos para enviar</div>
+        </div>
+        <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:20px;">
+          <div style="font-size:12px;color:#78716c;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Ya enviados</div>
+          <div style="font-size:32px;font-weight:800;color:#0066CC;margin-top:6px;">{len(ya_enviados)}</div>
+          <div style="font-size:12px;color:#78716c;margin-top:4px;">no se duplica</div>
+        </div>
+        <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:20px;">
+          <div style="font-size:12px;color:#78716c;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Sin celular</div>
+          <div style="font-size:32px;font-weight:800;color:#78716C;margin-top:6px;">{len(sin_telefono)}</div>
+          <div style="font-size:12px;color:#78716c;margin-top:4px;">teléfono fijo o inválido</div>
+        </div>
+      </div>
+
+      <div style="padding:0 40px 40px;">
+        <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="background:#1c1917;color:#fff;">
+              <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Negocio</th>
+              <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Teléfono</th>
+              <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Cupón</th>
+              <th style="padding:14px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Acción</th>
+            </tr></thead>
+            <tbody>{filas_html}</tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+</body></html>"""
+    return HTMLResponse(content=html_header + html_body)
+
+
+@router.post("/prospectos/whatsapp", response_class=HTMLResponse)
+async def procesar_whatsapp_outreach(
+    user: str = Depends(verificar_credenciales),
+    action: str = Form(...),
+    prospecto_id: Optional[int] = Form(None),
+):
+    """Envia WhatsApp a uno o todos los pendientes."""
+    from agent.memory import Prospecto
+
+    async with async_session() as session:
+        if action == "enviar_uno" and prospecto_id:
+            q = select(Prospecto).where(Prospecto.id == prospecto_id)
+            candidatos = list((await session.execute(q)).scalars().all())
+        else:  # enviar_todos
+            q = (
+                select(Prospecto)
+                .where(Prospecto.estado.in_(["respondido", "interesado"]))
+                .where(Prospecto.email_verificado == "SI")
+            )
+            todos = list((await session.execute(q)).scalars().all())
+            candidatos = [p for p in todos if _wa_normalizar_telefono(p.telefono or "")
+                          and WA_SENT_MARKER not in (p.notas or "")]
+
+    exitos = fallos = 0
+    detalles: list[str] = []
+    for p in candidatos:
+        tel_norm = _wa_normalizar_telefono(p.telefono or "")
+        if not tel_norm:
+            fallos += 1
+            detalles.append(f"{html.escape(p.nombre_negocio or '')}: sin celular válido")
+            continue
+        cupon = p.cupon or _wa_generar_cupon(p.nombre_negocio or "", p.id)
+        msg = _wa_construir_mensaje(p.nombre_doctor or "Doctor", p.nombre_negocio or "", cupon)
+        ok, info = await _wa_enviar_via_meta(tel_norm, msg)
+        if ok:
+            # Marcar como enviado
+            async with async_session() as s2:
+                pp = (await s2.execute(select(Prospecto).where(Prospecto.id == p.id))).scalar_one()
+                marca = f"\n{WA_SENT_MARKER} {datetime.utcnow():%Y-%m-%d %H:%M} (msg_id={info[:20]})"
+                pp.notas = (pp.notas or "") + marca
+                pp.actualizado_en = datetime.utcnow()
+                await s2.commit()
+            exitos += 1
+            detalles.append(f"✓ {html.escape(p.nombre_negocio or '')}")
+        else:
+            fallos += 1
+            detalles.append(f"✗ {html.escape(p.nombre_negocio or '')}: {html.escape(info[:80])}")
+
+    detalles_html = "<br>".join(detalles) if detalles else "Sin candidatos válidos"
+
+    return HTMLResponse(f"""
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Envío completo</title>{CSS_BASE}</head>
+<body><div class="app">{sidebar_html("prospectos")}<main class="main">
+<div style="padding:40px;max-width:760px;margin:auto;">
+  <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:32px;">
+    <h1 style="margin:0;font-size:24px;color:#1c1917;">📲 Envío WhatsApp</h1>
+    <p style="margin:16px 0;color:#57534e;font-size:18px;">
+      <strong style="color:#25D366;">✓ {exitos}</strong> enviados ·
+      <strong style="color:#EF4444;">✗ {fallos}</strong> fallos
+    </p>
+    <div style="background:#fafaf9;border:1px solid #e7e5e4;border-radius:10px;padding:16px;font-size:13px;color:#57534e;max-height:400px;overflow-y:auto;line-height:1.8;">
+      {detalles_html}
+    </div>
+    <div style="margin-top:24px;display:flex;gap:12px;">
+      <a href="/admin/prospectos/whatsapp"
+         style="background:#1c1917;color:#fff;text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:600;">
+        ← Volver
+      </a>
+      <a href="/admin/prospectos"
+         style="background:transparent;color:#1c1917;border:1.5px solid #1c1917;text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:600;">
+        Ver prospectos
+      </a>
+    </div>
   </div>
 </div>
 </main></div></body></html>""")
