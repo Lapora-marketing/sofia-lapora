@@ -796,6 +796,8 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'),
         ("prospectos", "Prospectos", "/admin/prospectos", 0,
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="9" y1="14" x2="13" y2="14"/></svg>'),
+        ("pipeline", "Pipeline de Ventas", "/admin/pipeline", 0,
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="18" rx="1"/><rect x="11" y="3" width="6" height="14" rx="1"/><rect x="19" y="3" width="2" height="9" rx="1"/></svg>'),
     ]
 
     links_html = ""
@@ -3384,3 +3386,243 @@ async def procesar_whatsapp_outreach(
   </div>
 </div>
 </main></div></body></html>""")
+
+
+# ════════════════════════════════════════════════════════════
+# PIPELINE KANBAN — Vista visual del embudo de ventas
+# ════════════════════════════════════════════════════════════
+
+# Columnas del Kanban con su orden y estilo
+PIPELINE_COLUMNAS = [
+    ("respondido",   "Respondió",      "#3B82F6", "📨"),  # azul
+    ("interesado",   "Interesado",     "#F59E0B", "🔥"),  # naranja
+    ("agendado",     "Llamada agendada","#A855F7", "📅"), # morado
+    ("propuesta",    "Propuesta enviada","#06B6D4", "📋"), # cyan
+    ("cliente",      "Cliente",        "#10B981", "🎉"), # verde
+    ("perdido",      "Perdido",        "#78716C", "❌"), # gris
+]
+
+
+@router.get("/pipeline", response_class=HTMLResponse)
+async def vista_pipeline(user: str = Depends(verificar_credenciales)):
+    """Vista Kanban del pipeline de ventas con drag-and-drop entre columnas."""
+    from agent.memory import Prospecto
+
+    async with async_session() as session:
+        # Solo prospectos que ya están en el pipeline (no los "no_enviado" ni los solo "enviado_sin_respuesta")
+        q = (
+            select(Prospecto)
+            .where(Prospecto.email_verificado == "SI")
+            .where(Prospecto.estado.in_([c[0] for c in PIPELINE_COLUMNAS]))
+            .order_by(Prospecto.actualizado_en.desc())
+        )
+        prospectos = list((await session.execute(q)).scalars().all())
+
+    # Agrupar por estado
+    por_estado: dict[str, list] = {c[0]: [] for c in PIPELINE_COLUMNAS}
+    for p in prospectos:
+        if p.estado in por_estado:
+            por_estado[p.estado].append(p)
+
+    # Construir columnas HTML
+    columnas_html = ""
+    for estado, label, color, emoji in PIPELINE_COLUMNAS:
+        cards = por_estado.get(estado, [])
+        cards_html = ""
+        for p in cards:
+            nombre = html.escape(p.nombre_negocio or "", quote=True)
+            doctor = html.escape(p.nombre_doctor or "", quote=True)[:35]
+            especialidad = html.escape((p.especialidad or "")[:25], quote=True)
+            tel = html.escape(p.telefono or "", quote=True)
+            cupon = html.escape(p.cupon or "", quote=True)
+            fecha = (p.fecha_respuesta or p.fecha_envio)
+            fecha_str = fecha.strftime("%d/%m %H:%M") if fecha else ""
+            preview = html.escape((p.preview_respuesta or "")[:60], quote=True)
+
+            tiene_wa = WA_SENT_MARKER in (p.notas or "")
+            badge_wa = '<span style="background:#25D366;color:#fff;font-size:9px;padding:2px 6px;border-radius:999px;font-weight:700;">WA</span>' if tiene_wa else ""
+
+            cards_html += f"""
+            <div class="kanban-card" draggable="true" data-pid="{p.id}" data-estado="{estado}">
+              <div style="display:flex;justify-content:space-between;align-items:start;gap:6px;margin-bottom:4px;">
+                <div style="font-weight:700;font-size:13px;color:#1c1917;line-height:1.2;">{nombre}</div>
+                {badge_wa}
+              </div>
+              <div style="font-size:11px;color:#78716c;margin-bottom:8px;">{doctor} · {especialidad}</div>
+              {f'<div style="font-size:11px;color:#57534e;font-style:italic;margin-bottom:8px;line-height:1.4;">"{preview}..."</div>' if preview else ''}
+              <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;">
+                <span style="font-family:monospace;font-weight:700;color:{color};">{cupon}</span>
+                <span style="color:#a8a29e;">{fecha_str}</span>
+              </div>
+              <div style="display:flex;gap:4px;margin-top:8px;border-top:1px solid #f5f5f4;padding-top:8px;">
+                <a href="https://wa.me/57{_re.sub(chr(92)+'D', '', tel)[-10:]}" target="_blank" title="WhatsApp"
+                   style="flex:1;text-align:center;background:#25D366;color:#fff;text-decoration:none;padding:5px;border-radius:6px;font-size:11px;font-weight:600;">💬</a>
+                <button onclick="moverProspecto({p.id}, 'cliente')" title="Marcar como cliente"
+                   style="flex:1;background:#10B981;color:#fff;border:none;padding:5px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">🎉</button>
+                <button onclick="moverProspecto({p.id}, 'perdido')" title="Marcar como perdido"
+                   style="flex:1;background:transparent;color:#78716c;border:1px solid #e7e5e4;padding:5px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">❌</button>
+              </div>
+            </div>"""
+
+        columnas_html += f"""
+        <div class="kanban-col" data-estado="{estado}">
+          <div class="kanban-col-header" style="background:linear-gradient(135deg, {color}, {color}dd);">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div style="font-weight:700;color:#fff;font-size:13px;">{emoji} {label}</div>
+              <div style="background:rgba(255,255,255,0.25);color:#fff;font-weight:800;padding:2px 10px;border-radius:999px;font-size:12px;">{len(cards)}</div>
+            </div>
+          </div>
+          <div class="kanban-col-body">
+            {cards_html if cards_html else '<div style="text-align:center;color:#a8a29e;font-style:italic;font-size:12px;padding:20px;">Vacío</div>'}
+          </div>
+        </div>"""
+
+    # Stats totales
+    total_pipeline = len(prospectos)
+    total_cierres  = len(por_estado.get("cliente", []))
+    en_negociacion = len(por_estado.get("interesado", [])) + len(por_estado.get("agendado", [])) + len(por_estado.get("propuesta", []))
+    perdidos       = len(por_estado.get("perdido", []))
+
+    html_header = """<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipeline de Ventas - Lapora CRM</title>"""
+
+    html_body = f"""
+    {CSS_BASE}
+    <style>
+      .kanban-board {{
+        display: flex; gap: 12px; overflow-x: auto;
+        padding: 24px; min-height: calc(100vh - 200px);
+        background: #fafaf9;
+      }}
+      .kanban-col {{
+        flex: 0 0 280px; background: #fff; border: 1px solid #e7e5e4;
+        border-radius: 14px; overflow: hidden; max-height: calc(100vh - 220px);
+        display: flex; flex-direction: column;
+      }}
+      .kanban-col-header {{
+        padding: 14px 16px;
+      }}
+      .kanban-col-body {{
+        flex: 1; padding: 10px; overflow-y: auto;
+        min-height: 200px;
+      }}
+      .kanban-col-body.drag-over {{ background: #fff1f0; }}
+      .kanban-card {{
+        background: #fff; border: 1px solid #e7e5e4; border-radius: 10px;
+        padding: 12px; margin-bottom: 8px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+        cursor: grab; transition: all 0.15s;
+      }}
+      .kanban-card:hover {{ box-shadow: 0 4px 10px rgba(0,0,0,0.08); transform: translateY(-1px); }}
+      .kanban-card.dragging {{ opacity: 0.5; cursor: grabbing; }}
+    </style>
+<body>
+  <div class="app">
+    {sidebar_html("pipeline")}
+    <main class="main" style="padding:0;">
+      <div style="padding:24px 40px;border-bottom:1px solid #e7e5e4;background:#fff;">
+        <h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#1c1917;">
+          Pipeline de Ventas
+        </h1>
+        <p style="margin:6px 0 18px;color:#78716c;font-size:14px;">
+          Arrastra tarjetas entre columnas o usa los botones para mover prospectos
+        </p>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;">
+          <div style="background:#fafaf9;border:1px solid #e7e5e4;border-radius:10px;padding:14px;">
+            <div style="font-size:11px;color:#78716c;text-transform:uppercase;letter-spacing:1px;font-weight:700;">En pipeline</div>
+            <div style="font-size:24px;font-weight:800;color:#1c1917;margin-top:4px;">{total_pipeline}</div>
+          </div>
+          <div style="background:#FFF8EC;border:1px solid #FDE68A;border-radius:10px;padding:14px;">
+            <div style="font-size:11px;color:#92400E;text-transform:uppercase;letter-spacing:1px;font-weight:700;">En negociación</div>
+            <div style="font-size:24px;font-weight:800;color:#F59E0B;margin-top:4px;">{en_negociacion}</div>
+          </div>
+          <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;padding:14px;">
+            <div style="font-size:11px;color:#065F46;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Cerrados 🎉</div>
+            <div style="font-size:24px;font-weight:800;color:#10B981;margin-top:4px;">{total_cierres}</div>
+          </div>
+          <div style="background:#F5F5F4;border:1px solid #e7e5e4;border-radius:10px;padding:14px;">
+            <div style="font-size:11px;color:#78716c;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Perdidos</div>
+            <div style="font-size:24px;font-weight:800;color:#78716C;margin-top:4px;">{perdidos}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="kanban-board">
+        {columnas_html}
+      </div>
+    </main>
+  </div>
+
+  <script>
+    function moverProspecto(pid, nuevoEstado) {{
+      const fd = new FormData();
+      fd.append('prospecto_id', pid);
+      fd.append('nuevo_estado', nuevoEstado);
+      fetch('/admin/pipeline/mover', {{ method: 'POST', body: fd }})
+        .then(r => r.ok ? location.reload() : alert('Error moviendo'))
+        .catch(e => alert('Error: ' + e));
+    }}
+
+    // Drag and drop entre columnas
+    let dragged = null;
+    document.querySelectorAll('.kanban-card').forEach(card => {{
+      card.addEventListener('dragstart', e => {{
+        dragged = card;
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      }});
+      card.addEventListener('dragend', () => {{
+        card.classList.remove('dragging');
+      }});
+    }});
+    document.querySelectorAll('.kanban-col-body').forEach(col => {{
+      col.addEventListener('dragover', e => {{
+        e.preventDefault();
+        col.classList.add('drag-over');
+      }});
+      col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
+      col.addEventListener('drop', e => {{
+        e.preventDefault();
+        col.classList.remove('drag-over');
+        if (!dragged) return;
+        const pid = dragged.dataset.pid;
+        const nuevoEstado = col.parentElement.dataset.estado;
+        const estadoActual = dragged.dataset.estado;
+        if (nuevoEstado !== estadoActual) {{
+          moverProspecto(pid, nuevoEstado);
+        }}
+      }});
+    }});
+  </script>
+</body></html>"""
+    return HTMLResponse(content=html_header + html_body)
+
+
+@router.post("/pipeline/mover")
+async def mover_prospecto_estado(
+    user: str = Depends(verificar_credenciales),
+    prospecto_id: int = Form(...),
+    nuevo_estado: str = Form(...),
+):
+    """Mueve un prospecto a otro estado del pipeline."""
+    from agent.memory import Prospecto
+    estados_validos = [c[0] for c in PIPELINE_COLUMNAS]
+    if nuevo_estado not in estados_validos:
+        return JSONResponse({"error": f"Estado inválido. Usa: {estados_validos}"}, status_code=400)
+
+    async with async_session() as session:
+        q = select(Prospecto).where(Prospecto.id == prospecto_id)
+        p = (await session.execute(q)).scalar_one_or_none()
+        if not p:
+            return JSONResponse({"error": "Prospecto no encontrado"}, status_code=404)
+        estado_anterior = p.estado
+        p.estado = nuevo_estado
+        p.actualizado_en = datetime.utcnow()
+        # Log en notas para trazabilidad
+        marca = f"\nPIPELINE: {estado_anterior} → {nuevo_estado} ({datetime.utcnow():%Y-%m-%d %H:%M})"
+        p.notas = (p.notas or "") + marca
+        await session.commit()
+
+    return JSONResponse({"ok": True, "id": prospecto_id, "estado": nuevo_estado})
