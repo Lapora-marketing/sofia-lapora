@@ -1507,7 +1507,12 @@ async def listar_conversaciones(user: str = Depends(verificar_credenciales)):
 
 
 @router.get("/conversaciones/{telefono}", response_class=HTMLResponse)
-async def ver_conversacion(telefono: str, user: str = Depends(verificar_credenciales)):
+async def ver_conversacion(
+    telefono: str,
+    user: str = Depends(verificar_credenciales),
+    sent: Optional[str] = None,
+    error: Optional[str] = None,
+):
     """Chat estilo WhatsApp."""
     async with async_session() as session:
         mensajes = (await session.execute(
@@ -1628,14 +1633,83 @@ async def ver_conversacion(telefono: str, user: str = Depends(verificar_credenci
                 </a>
             </div>
 
+            {f'<div style="background:#D1FAE5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Mensaje enviado al doctor correctamente</div>' if sent else ''}
+            {f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;"><strong>✗ Error al enviar:</strong> {html.escape(error or "")}</div>' if error else ''}
+
             <div class="chat-container">
                 {chat}
+            </div>
+
+            <!-- ✏️ INPUT DE RESPUESTA MANUAL (envia directo via Meta API) -->
+            <div style="background:#fff;border:1px solid #e7e5e4;border-radius:14px;padding:16px;margin-top:16px;box-shadow:var(--shadow-sm);">
+                <form method="post" action="/admin/conversaciones/{telefono}/responder"
+                      style="display:flex;gap:10px;align-items:flex-end;">
+                    <div style="flex:1;">
+                        <label style="display:block;font-size:12px;font-weight:700;color:#1c1917;margin-bottom:6px;">
+                            ✏️ Escribir como Lapora (intervención manual)
+                        </label>
+                        <textarea name="mensaje" required rows="2" maxlength="4000"
+                                  placeholder="Escribí aqui tu mensaje al doctor..."
+                                  style="width:100%;padding:10px 12px;border:1.5px solid #e7e5e4;border-radius:8px;
+                                         font-size:14px;font-family:inherit;resize:vertical;outline:none;line-height:1.4;"
+                                  onfocus="this.style.borderColor='#FF3B30'"
+                                  onblur="this.style.borderColor='#e7e5e4'"></textarea>
+                    </div>
+                    <button type="submit"
+                            style="background:#25D366;color:#fff;border:none;padding:12px 22px;border-radius:10px;
+                                   font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;
+                                   box-shadow:0 4px 12px rgba(37,211,102,0.3);">
+                        📲 Enviar
+                    </button>
+                </form>
+                <p style="font-size:11px;color:#a8a29e;margin-top:8px;line-height:1.5;">
+                    💡 El mensaje se envía como Lapora desde el +57 322 878 3019 vía Meta API.
+                    No se interrumpe a SofIA — ella seguirá respondiendo a futuros mensajes automáticamente.
+                </p>
             </div>
         </main>
     </div>
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+@router.post("/conversaciones/{telefono}/responder", response_class=HTMLResponse)
+async def responder_manual(
+    telefono: str,
+    user: str = Depends(verificar_credenciales),
+    mensaje: str = Form(...),
+):
+    """Envia un mensaje manual al doctor via Meta WhatsApp Cloud API."""
+    mensaje = mensaje.strip()
+    if not mensaje:
+        return RedirectResponse(f"/admin/conversaciones/{telefono}", status_code=303)
+
+    # Normalizar telefono para Meta API (formato 57XXXXXXXXXX sin +)
+    tel_limpio = _re.sub(r"\D", "", telefono)
+    if not tel_limpio.startswith("57") and len(tel_limpio) == 10:
+        tel_limpio = f"57{tel_limpio}"
+
+    ok, info = await _wa_enviar_via_meta(tel_limpio, mensaje)
+
+    if ok:
+        # Guardar el mensaje en la BD como si SofIA lo hubiera enviado (role=assistant)
+        async with async_session() as session:
+            session.add(Mensaje(
+                telefono=telefono,
+                role="assistant",
+                content=mensaje,
+                timestamp=datetime.utcnow(),
+            ))
+            await session.commit()
+        return RedirectResponse(f"/admin/conversaciones/{telefono}?sent=1", status_code=303)
+    else:
+        # Si fallo, mostrar error pero volver a la conversacion
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/admin/conversaciones/{telefono}?error={quote(info[:80])}",
+            status_code=303,
+        )
 
 
 # ════════════════════════════════════════════════════════════
