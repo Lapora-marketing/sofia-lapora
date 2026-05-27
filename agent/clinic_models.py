@@ -57,6 +57,13 @@ class Clinica(Base):
     instagram_token:   Mapped[str] = mapped_column(String(500), default="", nullable=True)
     google_sheet_id:   Mapped[str] = mapped_column(String(200), default="", nullable=True)
 
+    # Suspensión / billing
+    congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    motivo_suspension: Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    fecha_suspension: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    fecha_proximo_pago: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    monto_mensual_usd: Mapped[int] = mapped_column(Integer, default=0)
+
     # Timestamps
     creado_en:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     actualizado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

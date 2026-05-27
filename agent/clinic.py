@@ -19,6 +19,7 @@ URLs privadas (requieren sesion):
   /clinic/app/configuracion → integraciones (WhatsApp, IG, Sheets)
 """
 
+import os
 import html
 import secrets
 from datetime import datetime
@@ -402,10 +403,48 @@ async def login_procesar(email: str = Form(...), password: str = Form(...)):
             f"/clinic/login?error={html.escape('Email o contraseña incorrectos')}",
             status_code=303,
         )
+    # Verificar si la clínica está congelada
+    clinica = await obtener_clinica(usuario.clinica_id)
+    if clinica and clinica.congelada:
+        motivo = clinica.motivo_suspension or "Falta de pago"
+        return RedirectResponse(
+            f"/clinic/suspendida?motivo={html.escape(motivo, quote=True)}",
+            status_code=303,
+        )
     token = crear_sesion(usuario)
     response = RedirectResponse("/clinic/app/", status_code=303)
     response.set_cookie("clinic_session", token, max_age=86400 * 30, httponly=True, samesite="lax")
     return response
+
+
+@router.get("/suspendida", response_class=HTMLResponse)
+async def cuenta_suspendida(motivo: Optional[str] = None):
+    """Página que se muestra cuando una clínica intenta entrar con cuenta congelada."""
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Cuenta suspendida</title>{CSS_CLINIC}</head>
+<body>
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div style="max-width:500px;width:100%;text-align:center;">
+      <div style="font-size:80px;margin-bottom:18px;">⏸️</div>
+      <h1 style="font-size:28px;font-weight:800;margin-bottom:12px;color:#EF4444;">Cuenta suspendida</h1>
+      <div class="card" style="text-align:left;">
+        <p style="font-size:15px;line-height:1.6;color:var(--text);margin-bottom:14px;">
+          Tu acceso a Lapora Clinic está temporalmente <strong>suspendido</strong>. Toda tu información sigue intacta y la podrás recuperar al reactivar.
+        </p>
+        <div style="background:#FEE2E2;color:#7F1D1D;padding:14px;border-radius:10px;font-size:14px;margin-bottom:14px;">
+          <strong>Motivo:</strong> {html.escape(motivo or "Falta de pago")}
+        </div>
+        <p style="font-size:14px;color:var(--text-soft);">
+          Para reactivar tu cuenta, contáctanos:
+        </p>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
+          <a href="https://wa.me/573228783019?text=Quiero+reactivar+mi+cuenta+Lapora+Clinic" class="btn btn-primary" style="justify-content:center;background:#25D366;box-shadow:0 4px 12px rgba(37,211,102,0.3);">📱 WhatsApp Lapora</a>
+          <a href="mailto:laporamarketingdigital@gmail.com" class="btn btn-ghost" style="justify-content:center;">✉️ Enviar email</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</body></html>""")
 
 
 @router.get("/logout")
@@ -426,6 +465,7 @@ async def logout(clinic_session: Optional[str] = Cookie(None)):
 async def dashboard(
     bienvenida: Optional[str] = None,
     demo: Optional[int] = None,
+    impersonate: Optional[str] = None,
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -490,8 +530,11 @@ async def dashboard(
         )).scalars().all())
 
     bienvenida_html = ""
+    sesion_impersonate = sesion.get("impersonado_por") if sesion else None
+    if sesion_impersonate:
+        bienvenida_html = f'<div style="background:#FEF3C7;border:2px solid #F59E0B;color:#78350F;padding:14px 18px;border-radius:12px;margin-bottom:16px;font-weight:600;">👁️ Estás accediendo como SUPER ADMIN ({html.escape(sesion_impersonate)}). Esta es la vista del cliente. <a href="/clinic/superadmin" style="color:#78350F;text-decoration:underline;">Volver al panel admin</a></div>'
     if demo:
-        bienvenida_html = f'<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:14px 18px;border-radius:12px;margin-bottom:24px;">🎉 ¡Datos demo cargados! Tienes {demo} pacientes de ejemplo para explorar.</div>'
+        bienvenida_html += f'<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:14px 18px;border-radius:12px;margin-bottom:24px;">🎉 ¡Datos demo cargados! Tienes {demo} pacientes de ejemplo para explorar.</div>'
     elif bienvenida:
         bienvenida_html = f"""
         <div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:14px 18px;border-radius:12px;margin-bottom:24px;">
@@ -2231,7 +2274,463 @@ async def webhook_whatsapp_recibir(slug: str, request: Request):
 
 @router.get("/landing", response_class=HTMLResponse)
 async def landing_publico():
-    """Página de marketing pública de Lapora Clinic con pricing."""
+    """Página de marketing pública de Lapora Clinic (tema dark interactivo, estilo lapora.studio)."""
+    return HTMLResponse(LANDING_HTML)
+
+
+LANDING_HTML = """<!DOCTYPE html><html lang="es">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lapora Clinic — El software médico que vale 10x lo que cuesta</title>
+<meta name="description" content="WhatsApp + Instagram + Pacientes + IA en una sola plataforma. Diseñado por médicos para médicos colombianos.">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:ital,wght@0,700;0,800;1,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --r: #E8302A; --r2: #FF4840; --r3: #C0261F;
+    --k: #080808; --k2: #0F0F0F; --k3: #161616; --k4: #1C1C1C;
+    --w: #FFFFFF; --g: #888;
+    --b: rgba(255,255,255,0.08);
+  }
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth;overflow-x:hidden}
+  body{font-family:'Inter',sans-serif;background:var(--k);color:var(--w);overflow-x:hidden;line-height:1.5;}
+  a{color:inherit;text-decoration:none}
+
+  /* NAV */
+  .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(8,8,8,0.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--b);}
+  .nav-inner{max-width:1200px;margin:0 auto;padding:18px 32px;display:flex;justify-content:space-between;align-items:center;}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-0.5px;}
+  .logo-mark{width:32px;height:32px;background:var(--r);border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;}
+  .nav-links{display:flex;gap:28px;align-items:center;}
+  .nav-links a{font-size:14px;font-weight:500;color:#bbb;transition:color .2s;}
+  .nav-links a:hover{color:white;}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;transition:all .2s;border:none;cursor:pointer;}
+  .btn-primary{background:var(--r);color:white;box-shadow:0 4px 20px rgba(232,48,42,0.35);}
+  .btn-primary:hover{background:var(--r2);transform:translateY(-2px);box-shadow:0 8px 30px rgba(232,48,42,0.5);}
+  .btn-ghost{background:transparent;color:white;border:1.5px solid rgba(255,255,255,0.15);}
+  .btn-ghost:hover{border-color:white;}
+
+  /* HERO */
+  .hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:120px 24px 60px;position:relative;overflow:hidden;}
+  .hero::before{content:'';position:absolute;top:20%;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(circle, rgba(232,48,42,0.15) 0%, transparent 60%);pointer-events:none;}
+  .hero-tag{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;background:rgba(232,48,42,0.12);border:1px solid rgba(232,48,42,0.3);border-radius:999px;font-size:12px;font-weight:600;color:var(--r2);margin-bottom:28px;position:relative;}
+  .hero-tag::before{content:'●';color:var(--r);animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  .hero h1{font-family:'Playfair Display',serif;font-size:clamp(40px,7vw,84px);font-weight:900;letter-spacing:-2px;line-height:1.05;max-width:980px;margin-bottom:24px;position:relative;}
+  .hero h1 .red{color:var(--r);font-style:italic;}
+  .hero h1 .strike{position:relative;display:inline-block;}
+  .hero h1 .strike::after{content:'';position:absolute;top:50%;left:-4px;right:-4px;height:4px;background:var(--r);transform:translateY(-50%) rotate(-2deg);}
+  .hero p.lead{font-size:20px;color:#aaa;max-width:680px;margin-bottom:36px;line-height:1.6;position:relative;}
+  .hero-ctas{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-bottom:18px;position:relative;}
+  .hero-ctas .btn{padding:16px 28px;font-size:15px;}
+  .hero-meta{font-size:12px;color:#666;position:relative;}
+  .hero-meta strong{color:#ddd;}
+
+  /* COUNTERS */
+  .counters{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:24px;max-width:1100px;margin:80px auto;padding:0 32px;position:relative;}
+  .counter{text-align:center;padding:32px 20px;background:linear-gradient(180deg,var(--k3),var(--k2));border:1px solid var(--b);border-radius:18px;transition:all .3s;}
+  .counter:hover{transform:translateY(-4px);border-color:rgba(232,48,42,0.3);}
+  .counter-num{font-family:'Playfair Display',serif;font-size:48px;font-weight:900;color:var(--r);letter-spacing:-2px;}
+  .counter-label{font-size:13px;color:#888;margin-top:6px;text-transform:uppercase;letter-spacing:1px;font-weight:600;}
+
+  /* SECTIONS */
+  section{padding:100px 24px;}
+  .section-title{font-family:'Playfair Display',serif;font-size:clamp(32px,5vw,56px);font-weight:900;text-align:center;letter-spacing:-1.5px;margin-bottom:14px;}
+  .section-sub{font-size:17px;color:#aaa;text-align:center;max-width:640px;margin:0 auto 56px;line-height:1.6;}
+
+  /* FEATURES */
+  .features{max-width:1200px;margin:0 auto;}
+  .features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;}
+  .feature{background:linear-gradient(180deg,var(--k3),var(--k2));border:1px solid var(--b);border-radius:20px;padding:32px;transition:all .3s;position:relative;overflow:hidden;}
+  .feature::before{content:'';position:absolute;top:-50%;right:-50%;width:200px;height:200px;background:radial-gradient(circle, rgba(232,48,42,0.08) 0%, transparent 70%);opacity:0;transition:opacity .3s;}
+  .feature:hover{transform:translateY(-6px);border-color:rgba(232,48,42,0.3);}
+  .feature:hover::before{opacity:1;}
+  .feature-icon{font-size:36px;margin-bottom:18px;}
+  .feature h3{font-size:18px;font-weight:800;margin-bottom:8px;letter-spacing:-0.3px;}
+  .feature p{font-size:14px;color:#888;line-height:1.6;}
+
+  /* COMPARATIVA */
+  .compare{max-width:1100px;margin:0 auto;background:var(--k3);border:1px solid var(--b);border-radius:24px;overflow:hidden;}
+  .compare table{width:100%;border-collapse:collapse;}
+  .compare th, .compare td{padding:18px 24px;text-align:left;border-bottom:1px solid var(--b);}
+  .compare th{background:var(--k4);font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#888;font-weight:700;}
+  .compare th.us{background:rgba(232,48,42,0.15);color:var(--r2);}
+  .compare td{font-size:14px;}
+  .compare .yes{color:#10B981;font-weight:700;}
+  .compare .no{color:#ef4444;}
+  .compare .meh{color:#888;}
+
+  /* PRICING */
+  .pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;max-width:1100px;margin:0 auto;}
+  .price{background:linear-gradient(180deg,var(--k3),var(--k2));border:1.5px solid var(--b);border-radius:24px;padding:38px 32px;position:relative;transition:all .3s;}
+  .price.featured{border-color:var(--r);border-width:2.5px;transform:scale(1.04);box-shadow:0 20px 60px rgba(232,48,42,0.2);}
+  .price.featured::before{content:'⭐ MÁS POPULAR';position:absolute;top:-13px;left:50%;transform:translateX(-50%);background:var(--r);color:white;padding:5px 16px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:1px;}
+  .price-tier{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#888;margin-bottom:8px;}
+  .price-amount{font-family:'Playfair Display',serif;font-size:54px;font-weight:900;letter-spacing:-2px;line-height:1;}
+  .price-amount small{font-family:'Inter',sans-serif;font-size:14px;color:#888;font-weight:500;letter-spacing:0;}
+  .price-cop{font-size:12px;color:#888;margin-top:6px;}
+  .price-desc{color:#aaa;font-size:13px;margin:16px 0;line-height:1.5;}
+  .price ul{list-style:none;padding:0;margin:24px 0 28px;}
+  .price ul li{padding:7px 0;font-size:13px;color:#ddd;display:flex;align-items:flex-start;gap:8px;}
+  .price ul li::before{content:'✓';color:var(--r);font-weight:900;flex-shrink:0;}
+  .price ul li.bold{font-weight:600;color:white;}
+  .price .btn{width:100%;justify-content:center;font-size:14px;padding:14px;}
+
+  /* FAQ */
+  .faq{max-width:780px;margin:0 auto;}
+  .faq-item{background:var(--k3);border:1px solid var(--b);border-radius:14px;margin-bottom:10px;overflow:hidden;}
+  .faq-q{padding:18px 24px;cursor:pointer;font-weight:600;display:flex;justify-content:space-between;align-items:center;font-size:15px;}
+  .faq-q:hover{background:var(--k4);}
+  .faq-q::after{content:'+';font-size:24px;color:var(--r);font-weight:300;transition:transform .2s;}
+  .faq-item.open .faq-q::after{transform:rotate(45deg);}
+  .faq-a{max-height:0;overflow:hidden;transition:max-height .3s;color:#aaa;font-size:14px;line-height:1.7;padding:0 24px;}
+  .faq-item.open .faq-a{max-height:400px;padding:0 24px 20px;}
+
+  /* CTA FINAL */
+  .cta-final{text-align:center;max-width:780px;margin:0 auto;padding:60px 32px;background:linear-gradient(135deg,rgba(232,48,42,0.15),rgba(232,48,42,0.05));border:1.5px solid rgba(232,48,42,0.3);border-radius:32px;}
+  .cta-final h2{font-family:'Playfair Display',serif;font-size:42px;font-weight:900;margin-bottom:16px;letter-spacing:-1px;line-height:1.1;}
+  .cta-final p{color:#aaa;font-size:16px;margin-bottom:28px;}
+
+  /* FOOTER */
+  footer{padding:48px 24px;text-align:center;border-top:1px solid var(--b);background:var(--k);color:#666;font-size:13px;}
+  footer a{color:#aaa;margin:0 10px;}
+
+  @media (max-width: 768px){
+    .nav-links a:not(.btn){display:none;}
+    .price.featured{transform:none;}
+  }
+</style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="/clinic/landing" class="logo">
+        <span class="logo-mark">L</span>
+        <span>Lapora Clinic</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#compare">vs Competencia</a>
+        <a href="#pricing">Precios</a>
+        <a href="#faq">FAQ</a>
+        <a href="/clinic/login">Entrar</a>
+        <a href="/clinic/registro" class="btn btn-primary" style="padding:10px 20px;">Probar gratis</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero">
+    <span class="hero-tag">NUEVO · Disponible en Colombia</span>
+    <h1>El software que <span class="strike">tu consultorio</span><br>tu <span class="red">consultorio merece</span>.</h1>
+    <p class="lead">WhatsApp, Instagram, pacientes, IA y reportes. Todo en una sola pantalla. Diseñado por médicos colombianos para consultorios que quieren ganar más sin trabajar más.</p>
+    <div class="hero-ctas">
+      <a href="/clinic/registro" class="btn btn-primary">Empezar 14 días gratis →</a>
+      <a href="#features" class="btn btn-ghost">Ver qué hace</a>
+    </div>
+    <div class="hero-meta">✓ Sin tarjeta · ✓ Setup en 3 min · <strong>✓ Datos en Colombia</strong> · ✓ Cancelas cuando quieras</div>
+  </section>
+
+  <!-- CONTADORES -->
+  <div class="counters">
+    <div class="counter"><div class="counter-num">3 min</div><div class="counter-label">Setup completo</div></div>
+    <div class="counter"><div class="counter-num">10×</div><div class="counter-label">Más rápido respondiendo</div></div>
+    <div class="counter"><div class="counter-num">24/7</div><div class="counter-label">Bot IA activo</div></div>
+    <div class="counter"><div class="counter-num">∞</div><div class="counter-label">Pacientes (plan Pro)</div></div>
+  </div>
+
+  <!-- FEATURES -->
+  <section id="features" class="features">
+    <h2 class="section-title">Todo lo que <span style="color:var(--r);font-style:italic;">tu consultorio necesita</span></h2>
+    <p class="section-sub">Las 12 funciones que ya estás pagando en 4 apps distintas, ahora en una.</p>
+
+    <div class="features-grid">
+      <div class="feature">
+        <div class="feature-icon">📥</div>
+        <h3>Inbox unificado</h3>
+        <p>WhatsApp + Instagram + Email en una sola pantalla. Un solo lugar para todas las conversaciones con tus pacientes.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🤖</div>
+        <h3>IA SofIA propia</h3>
+        <p>Responde 24/7, agenda citas en tu calendario, califica leads. No es un chatbot genérico — está entrenado en medicina.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">👥</div>
+        <h3>CRM de pacientes</h3>
+        <p>Historial unificado: cita, tratamiento, alergias, notas. Búsqueda instantánea. Timeline de cada paciente.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📊</div>
+        <h3>Sync Google Sheets</h3>
+        <p>Importás tus pacientes desde Excel/Sheets en 1 click. Sin perder nada. Sincronización continua.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📝</div>
+        <h3>Plantillas inteligentes</h3>
+        <p>Respuestas rápidas con variables: {nombre}, {tratamiento}. Personaliza en segundos. 7 categorías predefinidas.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📞</div>
+        <h3>Bitácora de llamadas</h3>
+        <p>Cada llamada registrada con resultado, duración y próximos pasos. Nunca pierdas seguimiento.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📅</div>
+        <h3>Vista "Hoy" diaria</h3>
+        <p>Tareas del día en 1 vistazo: citas, mensajes sin responder, llamadas pendientes, nuevos pacientes esta semana.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔔</div>
+        <h3>Recordatorios automáticos</h3>
+        <p>Detecta pacientes que no han vuelto en X meses y los re-engancha automáticamente. (Pro/Studio)</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📈</div>
+        <h3>Analytics premium</h3>
+        <p>Pacientes en riesgo de abandono, ROI por canal, tiempo de respuesta promedio. (Studio)</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🎨</div>
+        <h3>Tu marca, tu dominio</h3>
+        <p>White-label total con dominio propio en plan Studio. Tus clientes ven solo tu marca.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔒</div>
+        <h3>Datos en Colombia</h3>
+        <p>Cumplimiento Ley 1581/2012 (Habeas Data). Servidores en LATAM. Backup automático diario.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">💬</div>
+        <h3>Soporte humano</h3>
+        <p>WhatsApp directo con un humano. No bots de soporte. Respuesta en menos de 4 horas. (Pro/Studio)</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPARATIVA -->
+  <section id="compare">
+    <h2 class="section-title">¿Por qué no <span style="color:var(--r);font-style:italic;">Wati</span> o <span style="color:var(--r);font-style:italic;">Chatwoot</span>?</h2>
+    <p class="section-sub">Las herramientas globales son genéricas. Lapora Clinic está hecho para el doctor colombiano.</p>
+
+    <div class="compare">
+      <table>
+        <tr>
+          <th>Característica</th>
+          <th class="us">Lapora Clinic</th>
+          <th>Wati</th>
+          <th>Chatwoot</th>
+        </tr>
+        <tr>
+          <td><strong>IA entrenada en medicina</strong></td>
+          <td class="yes">✓ SofIA propia</td>
+          <td class="no">✗</td>
+          <td class="no">✗</td>
+        </tr>
+        <tr>
+          <td><strong>Soporte en español colombiano</strong></td>
+          <td class="yes">✓ Por WhatsApp</td>
+          <td class="meh">⚠ Email en inglés</td>
+          <td class="meh">⚠ Email en inglés</td>
+        </tr>
+        <tr>
+          <td><strong>CRM de pacientes incluido</strong></td>
+          <td class="yes">✓ Con historial clínico</td>
+          <td class="no">✗ (genérico)</td>
+          <td class="meh">⚠ Solo contactos</td>
+        </tr>
+        <tr>
+          <td><strong>Sync Google Sheets</strong></td>
+          <td class="yes">✓ Bidireccional</td>
+          <td class="no">✗</td>
+          <td class="no">✗</td>
+        </tr>
+        <tr>
+          <td><strong>Plantillas con variables</strong></td>
+          <td class="yes">✓ 7 categorías</td>
+          <td class="yes">✓</td>
+          <td class="meh">⚠ Básico</td>
+        </tr>
+        <tr>
+          <td><strong>Bitácora de llamadas</strong></td>
+          <td class="yes">✓ Con resultado y notas</td>
+          <td class="no">✗</td>
+          <td class="no">✗</td>
+        </tr>
+        <tr>
+          <td><strong>Precio base mensual</strong></td>
+          <td class="us yes"><strong>$100 USD</strong></td>
+          <td class="meh">$120-200 USD</td>
+          <td class="meh">$19-99 USD (self-host complejo)</td>
+        </tr>
+        <tr>
+          <td><strong>Setup tiempo</strong></td>
+          <td class="yes">3 min</td>
+          <td class="meh">~30 min</td>
+          <td class="meh">2-3 horas (self-host)</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section id="pricing" style="background:var(--k2);">
+    <h2 class="section-title">Empezá <span style="color:var(--r);font-style:italic;">gratis</span>. Escalá cuando quieras.</h2>
+    <p class="section-sub">Precios en USD para que escales sin sorpresas. Sin contratos. Sin permanencia.</p>
+
+    <div class="pricing-grid">
+
+      <!-- FREE -->
+      <div class="price">
+        <div class="price-tier">FREE</div>
+        <div class="price-amount">$0<small>/mes</small></div>
+        <div class="price-cop">Para empezar y probar</div>
+        <p class="price-desc">Suficiente para validar el producto en tu consultorio.</p>
+        <ul>
+          <li>Hasta 100 pacientes</li>
+          <li>Inbox WhatsApp</li>
+          <li>1 usuario</li>
+          <li>Plantillas básicas</li>
+          <li>Soporte por email</li>
+        </ul>
+        <a href="/clinic/registro" class="btn btn-ghost">Empezar gratis</a>
+      </div>
+
+      <!-- PRO -->
+      <div class="price featured">
+        <div class="price-tier">PRO</div>
+        <div class="price-amount">$100<small> USD/mes</small></div>
+        <div class="price-cop">≈ $400.000 COP/mes</div>
+        <p class="price-desc">Para consultorios que ya facturan y quieren escalar con IA.</p>
+        <ul>
+          <li class="bold">Pacientes ilimitados</li>
+          <li class="bold">WhatsApp + Instagram + Email</li>
+          <li class="bold">IA SofIA (responde 24/7)</li>
+          <li>Sync Google Sheets continuo</li>
+          <li>5 usuarios</li>
+          <li>Tu logo en la plataforma</li>
+          <li>Recordatorios automáticos</li>
+          <li>Plantillas con variables</li>
+          <li>Soporte priority WhatsApp</li>
+          <li>14 días gratis de prueba</li>
+        </ul>
+        <a href="/clinic/registro" class="btn btn-primary">Probar 14 días gratis</a>
+      </div>
+
+      <!-- STUDIO -->
+      <div class="price">
+        <div class="price-tier">STUDIO</div>
+        <div class="price-amount">$250<small> USD/mes</small></div>
+        <div class="price-cop">≈ $1.000.000 COP/mes</div>
+        <p class="price-desc">Para clínicas con varios profesionales y necesidades premium.</p>
+        <ul>
+          <li>Todo lo de Pro</li>
+          <li class="bold">Usuarios ilimitados</li>
+          <li class="bold">Dominio propio (tudr.com)</li>
+          <li class="bold">Analytics avanzado + ROI</li>
+          <li>Detección de pacientes en riesgo</li>
+          <li>API custom</li>
+          <li>Onboarding personalizado</li>
+          <li>Soporte 24/7 dedicado</li>
+          <li>Backup diario garantizado</li>
+          <li>White-label total</li>
+        </ul>
+        <a href="https://wa.me/573228783019?text=Quiero+info+del+plan+Studio" class="btn btn-ghost">Hablar con ventas</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" style="background:var(--k);">
+    <h2 class="section-title">Preguntas <span style="color:var(--r);font-style:italic;">frecuentes</span></h2>
+    <p class="section-sub">Las dudas que todos los doctores nos hacen antes de empezar.</p>
+
+    <div class="faq">
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Mis pacientes pueden notar que uso un bot?</div>
+        <div class="faq-a">Si quieres, NO. SofIA está entrenada para sonar como tu staff, con tu tono y tus respuestas. Puedes intervenir manualmente cuando quieras. Muchos doctores hacen "modo híbrido": la IA responde, ellos cierran ventas grandes.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Qué pasa con mis datos si cancelo?</div>
+        <div class="faq-a">Te exportamos todo en CSV y te lo enviamos por email. Los datos permanecen 90 días por si quieres reactivar, después se borran de forma segura. Sin letra chica.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Funciona con mi número de WhatsApp actual?</div>
+        <div class="faq-a">Sí. Conectamos tu WhatsApp Business existente vía Meta Cloud API. Tus clientes ven el mismo número de siempre, pero tú gestionas todo desde Lapora. Sin descargar otra app.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Mis datos están seguros?</div>
+        <div class="faq-a">Cumplimos Ley 1581/2012 (Habeas Data Colombia). Servidores en LATAM (Railway/AWS), encriptación TLS 1.3, backup diario automático. Cada clínica tiene aislamiento total de datos.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Necesito ser técnico para usarlo?</div>
+        <div class="faq-a">No. El setup toma 3 minutos: 1) Registras tu clínica, 2) Conectas WhatsApp con un click, 3) Importas tus pacientes desde Excel. Nuestro equipo te acompaña gratis en el plan Pro+.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Cuánto recupero del costo?</div>
+        <div class="faq-a">Plan Pro ($100 USD/mes ≈ $400.000 COP) se paga solo con 1-2 pacientes nuevos cerrados al mes. Nuestros clientes promedio recuperan la inversión en la primera semana.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">¿Puedo cancelar cuando quiera?</div>
+        <div class="faq-a">Sí. Sin contratos, sin permanencia. Cancelas con un click y tu cuenta queda activa hasta el final del periodo pagado. Sin letra chica, sin penalidades.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA FINAL -->
+  <section>
+    <div class="cta-final">
+      <h2>Probalo hoy.<br>No te va a costar nada.</h2>
+      <p>14 días gratis del plan Pro. Sin tarjeta. Sin contratos.<br>Si no te gusta, te vas. Si te gusta, sigues por $100 USD/mes.</p>
+      <a href="/clinic/registro" class="btn btn-primary" style="padding:16px 32px;font-size:16px;">Empezar ahora →</a>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong style="color:white;">Lapora Clinic</strong> · Marketing digital + Software médico</p>
+    <p style="margin-top:8px;">
+      <a href="https://lapora.studio">lapora.studio</a> ·
+      <a href="https://wa.me/573228783019">WhatsApp +57 322 878 3019</a> ·
+      <a href="mailto:laporamarketingdigital@gmail.com">Email</a>
+    </p>
+    <p style="margin-top:12px;font-size:11px;color:#444;">© 2026 Lapora Marketing Digital. Hecho con ❤️ en Ibagué, Colombia.</p>
+  </footer>
+
+  <script>
+    // Smooth scroll para nav
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const el = document.querySelector(a.getAttribute('href'));
+        if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+      });
+    });
+    // Animar contadores cuando entran a viewport
+    const obs = new IntersectionObserver(entries => {
+      entries.forEach(e => {
+        if (e.isIntersecting) e.target.style.transform = 'translateY(0)';
+      });
+    });
+    document.querySelectorAll('.feature, .counter, .price').forEach(el => {
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(20px)';
+      el.style.transition = 'opacity .6s, transform .6s';
+      const io = new IntersectionObserver(([entry]) => {
+        if (entry.isIntersecting) {
+          el.style.opacity = '1';
+          el.style.transform = 'translateY(0)';
+        }
+      }, {threshold: 0.1});
+      io.observe(el);
+    });
+  </script>
+</body></html>"""
+
+
+# === LANDING viejo eliminado, se mantiene la antigua versión bajo /landing-old ===
+@router.get("/landing-old", response_class=HTMLResponse)
+async def landing_old():
+    """Versión anterior del landing — mantenida por compatibilidad."""
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Lapora Clinic — El software que tu consultorio necesita</title>
@@ -2731,3 +3230,355 @@ async def health_clinic():
         return {"status": "ok", "service": "lapora_clinic", "db": "ok"}
     except Exception as e:
         return {"status": "degraded", "service": "lapora_clinic", "error": str(e)[:100]}
+
+
+# ════════════════════════════════════════════════════════════
+# 17) SUPER ADMIN — Cuenta maestra de Lapora
+# ════════════════════════════════════════════════════════════
+# Accesible solo con las credenciales del CRM interno (lapora / lapora-sofia-2026)
+# Reutiliza la basic auth del módulo dashboard.
+
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets as _secrets
+
+_superadmin_security = HTTPBasic()
+
+def verificar_superadmin(credentials: HTTPBasicCredentials = Depends(_superadmin_security)):
+    """Basic auth para la cuenta maestra (compartida con CRM /admin)."""
+    user_ok = _secrets.compare_digest(credentials.username, os.getenv("LAPORA_DASHBOARD_USER", "lapora"))
+    pass_ok = _secrets.compare_digest(credentials.password, os.getenv("LAPORA_DASHBOARD_PASS", "lapora-sofia-2026"))
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=401, detail="No autorizado",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+@router.get("/superadmin", response_class=HTMLResponse)
+async def superadmin_dashboard(user: str = Depends(verificar_superadmin)):
+    """Lista TODAS las clínicas con stats — solo cuenta maestra Lapora."""
+    async with async_session() as session:
+        clinicas = list((await session.execute(
+            select(Clinica).order_by(desc(Clinica.creado_en))
+        )).scalars().all())
+        # Stats por clínica
+        stats: dict[int, dict] = {}
+        for c in clinicas:
+            n_pac = (await session.execute(
+                select(func.count(Paciente.id)).where(Paciente.clinica_id == c.id)
+            )).scalar() or 0
+            n_msg = (await session.execute(
+                select(func.count(MensajeUnificado.id)).where(MensajeUnificado.clinica_id == c.id)
+            )).scalar() or 0
+            n_usr = (await session.execute(
+                select(func.count(UsuarioClinic.id)).where(UsuarioClinic.clinica_id == c.id)
+            )).scalar() or 0
+            stats[c.id] = {"pacientes": n_pac, "mensajes": n_msg, "usuarios": n_usr}
+
+    total_clinicas = len(clinicas)
+    activas = sum(1 for c in clinicas if not c.congelada)
+    congeladas = total_clinicas - activas
+    mrr = sum(c.monto_mensual_usd for c in clinicas if not c.congelada)
+
+    filas = ""
+    for c in clinicas:
+        s = stats[c.id]
+        estado_bg = "rgba(239,68,68,0.1)" if c.congelada else "transparent"
+        estado_badge = (
+            '<span style="background:#EF4444;color:white;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">⏸ SUSPENDIDA</span>'
+            if c.congelada else
+            '<span style="background:#10B981;color:white;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">● ACTIVA</span>'
+        )
+        plan_color = {"free": "#78716C", "pro": "#10B981", "studio": "#3B82F6"}.get(c.plan, "#78716C")
+        creado = c.creado_en.strftime("%d/%m/%Y") if c.creado_en else "—"
+        accion = "descongelar" if c.congelada else "congelar"
+        boton_label = "▶ Reactivar" if c.congelada else "⏸ Suspender"
+        boton_color = "#10B981" if c.congelada else "#F59E0B"
+
+        filas += f"""
+        <tr style="background:{estado_bg};border-bottom:1px solid var(--border);">
+          <td style="padding:14px;">
+            <a href="/clinic/superadmin/clinicas/{c.id}" style="font-weight:600;color:var(--text);">{html.escape(c.nombre)}</a>
+            <div style="font-size:11px;color:var(--text-soft);">{html.escape(c.slug)} · {html.escape(c.ciudad or "")}</div>
+          </td>
+          <td style="padding:14px;">{estado_badge}</td>
+          <td style="padding:14px;">
+            <span style="background:{plan_color}20;color:{plan_color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;">{c.plan}</span>
+          </td>
+          <td style="padding:14px;text-align:center;font-weight:600;">{s['pacientes']}</td>
+          <td style="padding:14px;text-align:center;color:var(--text-soft);">{s['mensajes']}</td>
+          <td style="padding:14px;text-align:center;color:var(--text-soft);">{s['usuarios']}</td>
+          <td style="padding:14px;text-align:right;font-family:monospace;color:var(--green);font-weight:700;">${c.monto_mensual_usd}</td>
+          <td style="padding:14px;color:var(--text-soft);font-size:12px;">{creado}</td>
+          <td style="padding:14px;display:flex;gap:6px;">
+            <a href="/clinic/superadmin/clinicas/{c.id}/login" target="_blank"
+               style="background:#3B82F6;color:white;text-decoration:none;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600;" title="Entrar como esta clínica">👁 Ver</a>
+            <form method="post" action="/clinic/superadmin/clinicas/{c.id}/{accion}" style="margin:0;"
+                  onsubmit="return confirm('¿{boton_label} cuenta de {html.escape(c.nombre, quote=True)}?');">
+              <button type="submit" style="background:{boton_color};color:white;border:none;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;">{boton_label}</button>
+            </form>
+          </td>
+        </tr>"""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Super Admin - Lapora Clinic</title>{CSS_CLINIC}
+<style>
+  body {{ background: #0a0a0a; color: white; }}
+  .sa-header {{ background: linear-gradient(135deg, #FF3B30, #E63227); padding: 32px 40px; }}
+  .sa-stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; padding: 24px 40px; }}
+  .sa-stat {{ background: #1c1917; border-radius: 14px; padding: 20px; }}
+  .sa-stat-label {{ font-size: 11px; color: #a8a29e; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }}
+  .sa-stat-val {{ font-size: 28px; font-weight: 900; margin-top: 6px; color: white; }}
+  table {{ background: #1c1917; color: white; }}
+  table a {{ color: white; }}
+  table tr {{ border-bottom: 1px solid #292524; }}
+  .sa-table-wrap {{ padding: 0 40px 40px; }}
+</style>
+</head>
+<body>
+  <div class="sa-header">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h1 style="font-size:30px;font-weight:900;margin-bottom:4px;">⚡ Super Admin · Lapora Clinic</h1>
+        <p style="opacity:0.9;">Vista maestra · Todas las clínicas del SaaS</p>
+      </div>
+      <div style="font-size:13px;opacity:0.9;">
+        Logueado como: <strong>{html.escape(user)}</strong> ·
+        <a href="/admin/contactos" style="color:white;text-decoration:underline;">CRM SofIA →</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="sa-stats">
+    <div class="sa-stat">
+      <div class="sa-stat-label">Total clínicas</div>
+      <div class="sa-stat-val">{total_clinicas}</div>
+    </div>
+    <div class="sa-stat">
+      <div class="sa-stat-label">Activas</div>
+      <div class="sa-stat-val" style="color:#10B981;">{activas}</div>
+    </div>
+    <div class="sa-stat">
+      <div class="sa-stat-label">Suspendidas</div>
+      <div class="sa-stat-val" style="color:#EF4444;">{congeladas}</div>
+    </div>
+    <div class="sa-stat">
+      <div class="sa-stat-label">MRR estimado (USD)</div>
+      <div class="sa-stat-val" style="color:#FF3B30;">${mrr}</div>
+    </div>
+  </div>
+
+  <div class="sa-table-wrap">
+    <div style="background:#1c1917;border-radius:14px;overflow:hidden;border:1px solid #292524;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="background:#0a0a0a;color:#a8a29e;">
+          <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Clínica</th>
+          <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Estado</th>
+          <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Plan</th>
+          <th style="padding:14px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Pacientes</th>
+          <th style="padding:14px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Msgs</th>
+          <th style="padding:14px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Users</th>
+          <th style="padding:14px;text-align:right;font-size:11px;text-transform:uppercase;letter-spacing:1px;">USD/mes</th>
+          <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Creado</th>
+          <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Acciones</th>
+        </tr></thead>
+        <tbody>
+          {filas if filas else '<tr><td colspan="9" style="padding:60px;text-align:center;color:#78716c;font-style:italic;">Aún no hay clínicas registradas.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body></html>""")
+
+
+@router.get("/superadmin/clinicas/{clinica_id}", response_class=HTMLResponse)
+async def superadmin_detalle_clinica(
+    clinica_id: int,
+    user: str = Depends(verificar_superadmin),
+):
+    """Detalle administrativo de una clínica con acciones masivas."""
+    async with async_session() as session:
+        c = (await session.execute(select(Clinica).where(Clinica.id == clinica_id))).scalar_one_or_none()
+        if not c:
+            return HTMLResponse("<h1>Clínica no encontrada</h1>", status_code=404)
+        usuarios = list((await session.execute(
+            select(UsuarioClinic).where(UsuarioClinic.clinica_id == clinica_id)
+        )).scalars().all())
+
+    def esc(s): return html.escape(s or "", quote=True)
+    estado_text = "SUSPENDIDA ⏸️" if c.congelada else "ACTIVA ●"
+    estado_color = "#EF4444" if c.congelada else "#10B981"
+
+    usuarios_html = ""
+    for u in usuarios:
+        ult = u.ultimo_login.strftime("%d/%m/%Y %H:%M") if u.ultimo_login else "Nunca"
+        usuarios_html += f"<div style='padding:8px 0;border-bottom:1px solid #292524;'><strong>{esc(u.nombre)}</strong> · {esc(u.email)} · <span style='color:#a8a29e;font-size:12px;'>Último login: {ult}</span></div>"
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>{esc(c.nombre)} - Super Admin</title>{CSS_CLINIC}
+<style>body {{ background: #0a0a0a; color: white; }} .card {{ background: #1c1917; border: 1px solid #292524; color: white; }} a {{ color: white; }}</style>
+</head>
+<body>
+  <div style="padding:32px 40px;background:linear-gradient(135deg,#FF3B30,#E63227);">
+    <a href="/clinic/superadmin" style="color:white;text-decoration:none;font-size:13px;">← Volver al super admin</a>
+    <h1 style="font-size:30px;font-weight:900;margin-top:8px;">{esc(c.nombre)}</h1>
+    <p style="opacity:0.9;font-size:14px;">slug: <code>{esc(c.slug)}</code> · Plan {esc(c.plan).upper()} · <span style="color:{estado_color};font-weight:700;">{estado_text}</span></p>
+  </div>
+
+  <div style="padding:32px 40px;display:grid;grid-template-columns:2fr 1fr;gap:20px;">
+
+    <!-- ACCIONES PRINCIPALES -->
+    <div class="card" style="padding:24px;">
+      <h2 style="font-size:18px;font-weight:800;margin-bottom:16px;">⚙️ Acciones administrativas</h2>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+
+        <form method="post" action="/clinic/superadmin/clinicas/{c.id}/login"
+              style="display:flex;align-items:center;justify-content:space-between;padding:14px;background:#0a0a0a;border-radius:10px;">
+          <div>
+            <strong>🔐 Entrar como esta clínica</strong>
+            <div style="font-size:12px;color:#a8a29e;margin-top:2px;">Crea una sesión y accede al dashboard de la clínica</div>
+          </div>
+          <button type="submit" style="background:#3B82F6;color:white;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Acceder ahora →</button>
+        </form>
+
+        {(f'''<form method="post" action="/clinic/superadmin/clinicas/{c.id}/descongelar"
+                style="display:flex;align-items:center;justify-content:space-between;padding:14px;background:#0a0a0a;border-radius:10px;"
+                onsubmit="return confirm('¿Reactivar la cuenta de {esc(c.nombre)}?');">
+            <div>
+              <strong>▶ Reactivar cuenta</strong>
+              <div style="font-size:12px;color:#a8a29e;margin-top:2px;">El cliente podrá volver a entrar y usar la plataforma</div>
+            </div>
+            <button type="submit" style="background:#10B981;color:white;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Reactivar</button>
+          </form>''' if c.congelada else f'''
+          <form method="post" action="/clinic/superadmin/clinicas/{c.id}/congelar"
+                style="padding:14px;background:#0a0a0a;border-radius:10px;">
+            <div style="margin-bottom:10px;">
+              <strong>⏸ Suspender cuenta</strong>
+              <div style="font-size:12px;color:#a8a29e;margin-top:2px;">No podrá entrar hasta que se reactive. Sus datos quedan intactos.</div>
+            </div>
+            <input type="text" name="motivo" placeholder="Motivo (ej: Falta de pago Mayo 2026)" required
+                   style="width:100%;padding:10px;background:#1c1917;border:1px solid #292524;border-radius:8px;color:white;font-size:13px;margin-bottom:8px;">
+            <button type="submit" onclick="return confirm('¿Suspender la cuenta de {esc(c.nombre)}?');" style="background:#F59E0B;color:white;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;width:100%;">⏸ Suspender ahora</button>
+          </form>''')}
+
+        <form method="post" action="/clinic/superadmin/clinicas/{c.id}/plan"
+              style="padding:14px;background:#0a0a0a;border-radius:10px;">
+          <div style="margin-bottom:10px;">
+            <strong>💰 Cambiar plan / facturación</strong>
+            <div style="font-size:12px;color:#a8a29e;margin-top:2px;">Plan actual: {esc(c.plan).upper()} · ${c.monto_mensual_usd} USD/mes</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+            <select name="plan" style="padding:10px;background:#1c1917;border:1px solid #292524;border-radius:8px;color:white;">
+              <option value="free" {'selected' if c.plan == 'free' else ''}>FREE</option>
+              <option value="pro" {'selected' if c.plan == 'pro' else ''}>PRO ($100/mes)</option>
+              <option value="studio" {'selected' if c.plan == 'studio' else ''}>STUDIO ($250/mes)</option>
+            </select>
+            <input type="number" name="monto_usd" value="{c.monto_mensual_usd}" placeholder="USD/mes"
+                   style="padding:10px;background:#1c1917;border:1px solid #292524;border-radius:8px;color:white;">
+          </div>
+          <button type="submit" style="background:#10B981;color:white;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;width:100%;">Actualizar plan</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- INFO LATERAL -->
+    <div class="card" style="padding:24px;">
+      <h3 style="font-size:14px;font-weight:700;text-transform:uppercase;color:#a8a29e;letter-spacing:1px;margin-bottom:14px;">📋 Datos</h3>
+      <div style="font-size:13px;line-height:1.8;">
+        <div><strong>ID:</strong> {c.id}</div>
+        <div><strong>Slug:</strong> <code>{esc(c.slug)}</code></div>
+        <div><strong>Especialidad:</strong> {esc(c.especialidad) or "—"}</div>
+        <div><strong>Ciudad:</strong> {esc(c.ciudad) or "—"}</div>
+        <div><strong>WhatsApp:</strong> {('✓ Conectado' if c.whatsapp_phone_id else '✗ No')}</div>
+        <div><strong>Instagram:</strong> {('✓ Conectado' if c.instagram_account_id else '✗ No')}</div>
+        <div><strong>Sheets:</strong> {('✓ Conectado' if c.google_sheet_id else '✗ No')}</div>
+        <div><strong>Creado:</strong> {c.creado_en.strftime('%d/%m/%Y') if c.creado_en else '—'}</div>
+        {(f'<div style="margin-top:14px;padding:10px;background:#7F1D1D;border-radius:8px;font-size:12px;"><strong>Motivo suspensión:</strong><br>{esc(c.motivo_suspension)}<br><span style="color:#fca5a5;">desde {c.fecha_suspension.strftime("%d/%m/%Y") if c.fecha_suspension else "—"}</span></div>' if c.congelada else '')}
+      </div>
+
+      <h3 style="font-size:14px;font-weight:700;text-transform:uppercase;color:#a8a29e;letter-spacing:1px;margin-top:24px;margin-bottom:10px;">👥 Usuarios ({len(usuarios)})</h3>
+      <div style="font-size:13px;">{usuarios_html or "<em>Sin usuarios</em>"}</div>
+    </div>
+  </div>
+</body></html>""")
+
+
+@router.post("/superadmin/clinicas/{clinica_id}/congelar")
+async def superadmin_congelar(
+    clinica_id: int,
+    motivo: str = Form(""),
+    user: str = Depends(verificar_superadmin),
+):
+    async with async_session() as session:
+        c = (await session.execute(select(Clinica).where(Clinica.id == clinica_id))).scalar_one_or_none()
+        if c:
+            c.congelada = True
+            c.motivo_suspension = motivo.strip() or "Falta de pago"
+            c.fecha_suspension = datetime.utcnow()
+            await session.commit()
+        # Invalidar sesiones activas de la clínica
+        global SESSIONS
+        tokens_a_eliminar = [t for t, s in SESSIONS.items() if s.get("clinica_id") == clinica_id]
+        for t in tokens_a_eliminar:
+            del SESSIONS[t]
+    return RedirectResponse(f"/clinic/superadmin/clinicas/{clinica_id}", status_code=303)
+
+
+@router.post("/superadmin/clinicas/{clinica_id}/descongelar")
+async def superadmin_descongelar(clinica_id: int, user: str = Depends(verificar_superadmin)):
+    async with async_session() as session:
+        c = (await session.execute(select(Clinica).where(Clinica.id == clinica_id))).scalar_one_or_none()
+        if c:
+            c.congelada = False
+            c.motivo_suspension = ""
+            c.fecha_suspension = None
+            await session.commit()
+    return RedirectResponse(f"/clinic/superadmin/clinicas/{clinica_id}", status_code=303)
+
+
+@router.post("/superadmin/clinicas/{clinica_id}/plan")
+async def superadmin_cambiar_plan(
+    clinica_id: int,
+    plan: str = Form(...),
+    monto_usd: int = Form(0),
+    user: str = Depends(verificar_superadmin),
+):
+    async with async_session() as session:
+        c = (await session.execute(select(Clinica).where(Clinica.id == clinica_id))).scalar_one_or_none()
+        if c:
+            c.plan = plan
+            c.monto_mensual_usd = monto_usd
+            await session.commit()
+    return RedirectResponse(f"/clinic/superadmin/clinicas/{clinica_id}", status_code=303)
+
+
+@router.api_route("/superadmin/clinicas/{clinica_id}/login", methods=["GET", "POST"])
+async def superadmin_impersonate(
+    clinica_id: int,
+    user: str = Depends(verificar_superadmin),
+):
+    """Permite al super admin entrar como una clínica (impersonation segura)."""
+    async with async_session() as session:
+        c = (await session.execute(select(Clinica).where(Clinica.id == clinica_id))).scalar_one_or_none()
+        if not c:
+            return HTMLResponse("<h1>Clínica no encontrada</h1>", status_code=404)
+        # Buscar el usuario owner de la clínica
+        owner = (await session.execute(
+            select(UsuarioClinic).where(UsuarioClinic.clinica_id == clinica_id)
+            .where(UsuarioClinic.rol == "owner").limit(1)
+        )).scalar_one_or_none()
+        if not owner:
+            owner = (await session.execute(
+                select(UsuarioClinic).where(UsuarioClinic.clinica_id == clinica_id).limit(1)
+            )).scalar_one_or_none()
+        if not owner:
+            return HTMLResponse("<h1>Esta clínica no tiene usuarios. Crea uno primero.</h1>", status_code=400)
+
+        token = crear_sesion(owner)
+        # Marcar la sesión como impersonation
+        SESSIONS[token]["impersonado_por"] = user
+
+    response = RedirectResponse("/clinic/app/?impersonate=1", status_code=303)
+    response.set_cookie("clinic_session", token, max_age=86400, httponly=True, samesite="lax")
+    return response
