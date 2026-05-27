@@ -18,6 +18,7 @@ from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial, upsert_contacto
 from agent.providers import obtener_proveedor
 from agent.dashboard import router as dashboard_router
+from agent.clinic import router as clinic_router
 from agent.reminders import scheduler_loop
 
 load_dotenv(override=True)
@@ -75,6 +76,8 @@ app = FastAPI(
 
 # Dashboard administrativo en /admin/conversaciones
 app.include_router(dashboard_router)
+# Lapora Clinic SaaS en /clinic/
+app.include_router(clinic_router)
 
 
 @app.get("/")

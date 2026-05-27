@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+# agent/clinic_models.py — Modelos multi-tenant de Lapora Clinic
+# Lapora Marketing Digital
+
+"""
+Modelos SQLAlchemy para Lapora Clinic (SaaS multi-tenant).
+Cada Clinica es un tenant aislado. Todos los datos de pacientes/mensajes/etc.
+llevan clinica_id para garantizar separación.
+
+Convive con los modelos de SofIA (Mensaje, Contacto, Prospecto) en memory.py.
+"""
+
+import hashlib
+import secrets
+from datetime import datetime
+from typing import Optional
+from sqlalchemy import (
+    String, Text, DateTime, Integer, Boolean, ForeignKey, select, or_
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.ext.asyncio import AsyncSession
+
+# Reutilizamos la Base y session del archivo memory.py existente
+from agent.memory import Base, async_session
+
+
+# ════════════════════════════════════════════════════════════
+# CLINICA — Tenant (cliente que paga Lapora Clinic)
+# ════════════════════════════════════════════════════════════
+
+class Clinica(Base):
+    """Una clínica = un tenant. Aislamiento total de datos por clinica_id."""
+    __tablename__ = "clinic_clinicas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Identificación
+    nombre:     Mapped[str] = mapped_column(String(200))
+    slug:       Mapped[str] = mapped_column(String(80), unique=True, index=True)  # ej: clinica-tolima
+    especialidad: Mapped[str] = mapped_column(String(100), default="", nullable=True)
+    ciudad:     Mapped[str] = mapped_column(String(100), default="", nullable=True)
+
+    # Plan / pricing
+    # free | pro | studio
+    plan:       Mapped[str] = mapped_column(String(20), default="free", index=True)
+    activo:     Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Branding (white-label en plan studio)
+    logo_url:   Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    color_primario: Mapped[str] = mapped_column(String(20), default="#FF3B30", nullable=True)
+    dominio_personalizado: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+
+    # Integraciones (encriptado en producción — por ahora plano para MVP)
+    whatsapp_phone_id: Mapped[str] = mapped_column(String(50), default="", nullable=True)
+    whatsapp_token:    Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    instagram_account_id: Mapped[str] = mapped_column(String(50), default="", nullable=True)
+    instagram_token:   Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    google_sheet_id:   Mapped[str] = mapped_column(String(200), default="", nullable=True)
+
+    # Timestamps
+    creado_en:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ════════════════════════════════════════════════════════════
+# USUARIO — Login para entrar a la clínica
+# ════════════════════════════════════════════════════════════
+
+class UsuarioClinic(Base):
+    """Usuario que entra a una clínica. Rol: owner | recepcionista | asistente."""
+    __tablename__ = "clinic_usuarios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id: Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+
+    nombre:        Mapped[str] = mapped_column(String(200))
+    email:         Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))  # hash con salt
+    rol:           Mapped[str] = mapped_column(String(30), default="owner")
+
+    activo:        Mapped[bool] = mapped_column(Boolean, default=True)
+    ultimo_login:  Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    creado_en:     Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ════════════════════════════════════════════════════════════
+# PACIENTE — El cliente final del consultorio
+# ════════════════════════════════════════════════════════════
+
+class Paciente(Base):
+    """Paciente del consultorio. Aislado por clinica_id."""
+    __tablename__ = "clinic_pacientes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id: Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+
+    # Datos básicos
+    nombre:    Mapped[str] = mapped_column(String(200), index=True)
+    telefono:  Mapped[str] = mapped_column(String(50), default="", index=True)
+    email:     Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    fecha_nacimiento: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    genero:    Mapped[str] = mapped_column(String(20), default="", nullable=True)
+    documento: Mapped[str] = mapped_column(String(50), default="", nullable=True)
+
+    # Notas básicas (NO HCE completa por tema legal)
+    notas_basicas: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    tratamiento_actual: Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    alergias:  Mapped[str] = mapped_column(String(300), default="", nullable=True)
+
+    # Estado del paciente en el consultorio
+    # nuevo | activo | inactivo | dado_de_alta
+    estado:    Mapped[str] = mapped_column(String(30), default="nuevo", index=True)
+    fuente:    Mapped[str] = mapped_column(String(50), default="manual", nullable=True)  # whatsapp / ig / sheets / manual
+    tags:      Mapped[str] = mapped_column(String(300), default="", nullable=True)
+
+    # Métricas
+    total_mensajes: Mapped[int] = mapped_column(Integer, default=0)
+    total_citas:    Mapped[int] = mapped_column(Integer, default=0)
+    valor_total:    Mapped[int] = mapped_column(Integer, default=0)  # COP
+
+    # Timestamps
+    primer_contacto: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ultimo_contacto: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ultima_cita:     Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+
+# ════════════════════════════════════════════════════════════
+# MENSAJE UNIFICADO — Inbox WhatsApp + Instagram + Email
+# ════════════════════════════════════════════════════════════
+
+class MensajeUnificado(Base):
+    """Mensaje de cualquier canal (WhatsApp, IG, Email). Inbox unificado."""
+    __tablename__ = "clinic_mensajes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id:  Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+    paciente_id: Mapped[int] = mapped_column(ForeignKey("clinic_pacientes.id"), nullable=True, index=True)
+
+    # whatsapp | instagram | email | sms | llamada
+    canal:       Mapped[str] = mapped_column(String(20), index=True)
+    direccion:   Mapped[str] = mapped_column(String(10))  # entrada | salida
+    contenido:   Mapped[Text] = mapped_column(Text)
+    leido:       Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    respondido_por: Mapped[str] = mapped_column(String(30), default="", nullable=True)  # ia | usuario | nadie
+
+    # Metadata del canal externo
+    canal_msg_id: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    adjunto_url:  Mapped[str] = mapped_column(String(500), default="", nullable=True)
+
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ════════════════════════════════════════════════════════════
+# LLAMADA — Bitácora manual de llamadas
+# ════════════════════════════════════════════════════════════
+
+class Llamada(Base):
+    """Registro de llamada telefónica."""
+    __tablename__ = "clinic_llamadas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id:  Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+    paciente_id: Mapped[int] = mapped_column(ForeignKey("clinic_pacientes.id"), index=True)
+
+    direccion:   Mapped[str] = mapped_column(String(10))  # entrada | salida | perdida
+    duracion_seg: Mapped[int] = mapped_column(Integer, default=0)
+    notas:       Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    # interesado | no_interesado | agendado | volver_a_llamar
+    resultado:   Mapped[str] = mapped_column(String(30), default="", nullable=True)
+
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ════════════════════════════════════════════════════════════
+# CITA — Agenda médica
+# ════════════════════════════════════════════════════════════
+
+class CitaClinic(Base):
+    """Cita agendada del paciente."""
+    __tablename__ = "clinic_citas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id:  Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+    paciente_id: Mapped[int] = mapped_column(ForeignKey("clinic_pacientes.id"), index=True)
+
+    fecha_hora:  Mapped[datetime] = mapped_column(DateTime, index=True)
+    duracion_min: Mapped[int] = mapped_column(Integer, default=30)
+    motivo:      Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    # agendada | confirmada | completada | no_show | cancelada
+    estado:      Mapped[str] = mapped_column(String(30), default="agendada", index=True)
+    notas:       Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    google_event_id: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ════════════════════════════════════════════════════════════
+# PLANTILLA — Respuestas rápidas
+# ════════════════════════════════════════════════════════════
+
+class PlantillaRespuesta(Base):
+    """Plantillas de respuesta rápida por clínica."""
+    __tablename__ = "clinic_plantillas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id: Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+
+    titulo:    Mapped[str] = mapped_column(String(150))
+    contenido: Mapped[Text] = mapped_column(Text)
+    categoria: Mapped[str] = mapped_column(String(50), default="general", nullable=True)
+    usos:      Mapped[int] = mapped_column(Integer, default=0)
+
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ════════════════════════════════════════════════════════════
+# FOTO ANTES/DESPUÉS — Para estética
+# ════════════════════════════════════════════════════════════
+
+class FotoTratamiento(Base):
+    """Foto antes/después con consentimiento."""
+    __tablename__ = "clinic_fotos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id:  Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+    paciente_id: Mapped[int] = mapped_column(ForeignKey("clinic_pacientes.id"), index=True)
+
+    tratamiento: Mapped[str] = mapped_column(String(200))
+    foto_antes:  Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    foto_despues: Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    consentimiento: Mapped[bool] = mapped_column(Boolean, default=False)
+    notas:       Mapped[Text] = mapped_column(Text, default="", nullable=True)
+
+    fecha: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ════════════════════════════════════════════════════════════
+# UTILIDADES — Hash password, slug, etc.
+# ════════════════════════════════════════════════════════════
+
+def hash_password(password: str) -> str:
+    """Hash con salt para passwords (PBKDF2)."""
+    salt = secrets.token_hex(16)
+    pwhash = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000
+    )
+    return f"{salt}${pwhash.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verifica password contra hash almacenado."""
+    try:
+        salt, pwhash = stored_hash.split("$", 1)
+        new_hash = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000
+        ).hex()
+        return secrets.compare_digest(new_hash, pwhash)
+    except (ValueError, AttributeError):
+        return False
+
+
+def slugify(texto: str) -> str:
+    """Convierte 'Clínica Tolima' → 'clinica-tolima'."""
+    import re
+    import unicodedata
+    s = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^\w\s-]", "", s).strip().lower()
+    s = re.sub(r"[\s_-]+", "-", s)
+    return s
+
+
+# ════════════════════════════════════════════════════════════
+# QUERIES HELPERS — Operaciones comunes
+# ════════════════════════════════════════════════════════════
+
+async def crear_clinica(nombre: str, email_admin: str, password_admin: str,
+                         nombre_admin: str = "Admin", especialidad: str = "",
+                         ciudad: str = "Ibagué") -> tuple[Clinica, UsuarioClinic]:
+    """Crea una nueva clínica + su primer usuario admin."""
+    async with async_session() as session:
+        slug = slugify(nombre)
+        # Asegurar unicidad
+        existing = (await session.execute(
+            select(Clinica).where(Clinica.slug == slug)
+        )).scalar_one_or_none()
+        contador = 1
+        slug_final = slug
+        while existing:
+            contador += 1
+            slug_final = f"{slug}-{contador}"
+            existing = (await session.execute(
+                select(Clinica).where(Clinica.slug == slug_final)
+            )).scalar_one_or_none()
+
+        clinica = Clinica(
+            nombre=nombre,
+            slug=slug_final,
+            especialidad=especialidad,
+            ciudad=ciudad,
+            plan="free",
+        )
+        session.add(clinica)
+        await session.flush()  # Para obtener clinica.id
+
+        usuario = UsuarioClinic(
+            clinica_id=clinica.id,
+            nombre=nombre_admin,
+            email=email_admin.lower(),
+            password_hash=hash_password(password_admin),
+            rol="owner",
+        )
+        session.add(usuario)
+        await session.commit()
+        await session.refresh(clinica)
+        await session.refresh(usuario)
+        return clinica, usuario
+
+
+async def autenticar_usuario(email: str, password: str) -> UsuarioClinic | None:
+    """Login: retorna el usuario si las credenciales son válidas."""
+    async with async_session() as session:
+        usuario = (await session.execute(
+            select(UsuarioClinic).where(UsuarioClinic.email == email.lower())
+        )).scalar_one_or_none()
+        if not usuario or not usuario.activo:
+            return None
+        if not verify_password(password, usuario.password_hash):
+            return None
+        usuario.ultimo_login = datetime.utcnow()
+        await session.commit()
+        return usuario
+
+
+async def obtener_clinica(clinica_id: int) -> Clinica | None:
+    async with async_session() as session:
+        return (await session.execute(
+            select(Clinica).where(Clinica.id == clinica_id)
+        )).scalar_one_or_none()
