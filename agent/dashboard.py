@@ -798,6 +798,8 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="9" y1="14" x2="13" y2="14"/></svg>'),
         ("pipeline", "Pipeline de Ventas", "/admin/pipeline", 0,
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="18" rx="1"/><rect x="11" y="3" width="6" height="14" rx="1"/><rect x="19" y="3" width="2" height="9" rx="1"/></svg>'),
+        ("saas", "⚡ Lapora Clinic SaaS", "/clinic/superadmin", 0,
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>'),
     ]
 
     links_html = ""

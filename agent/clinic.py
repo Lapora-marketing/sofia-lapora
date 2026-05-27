@@ -39,6 +39,16 @@ from io import StringIO
 import csv as _csv_mod
 
 
+def get_sa_email() -> str:
+    """Devuelve el email del Service Account para que las clínicas lo compartan."""
+    try:
+        from agent.clinic_calendar import obtener_email_service_account
+        email = obtener_email_service_account()
+        return email or "service-account@lapora.iam.gserviceaccount.com"
+    except Exception:
+        return "service-account@lapora.iam.gserviceaccount.com"
+
+
 router = APIRouter(prefix="/clinic", tags=["clinic"])
 
 # Sesiones en memoria (MVP — para prod usar Redis o DB)
@@ -184,6 +194,7 @@ def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
         ("dashboard", "Dashboard",  "/clinic/app/",            "M3 12h2l2-7 4 14 4-7 2 0"),
         ("inbox",     "Inbox",      "/clinic/app/inbox",       "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"),
         ("pacientes", "Pacientes",  "/clinic/app/pacientes",   "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"),
+        ("citas",     "Citas",      "/clinic/app/citas",       "M3 4h18v2H3z M3 10h18v10H3z"),
         ("llamadas",  "Llamadas",   "/clinic/app/llamadas",    "M22 16.92v3a2 2 0 0 1-2.18 2A19.79 19.79 0 0 1 2 5.18 2 2 0 0 1 4 3h3"),
         ("plantillas","Plantillas", "/clinic/app/plantillas",  "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"),
         ("config",    "Configuración","/clinic/app/configuracion","M12 1v6 M12 17v6 M4.22 4.22l4.24 4.24"),
@@ -1980,6 +1991,30 @@ async def vista_config(
           {('<button type="button" onclick="syncSheets()" style="background:#3B82F6;color:white;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:12px;">↻ Sincronizar ahora</button>' if clinica.google_sheet_id else '')}
         </div>
 
+        <!-- GOOGLE CALENDAR -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:16px;font-weight:700;">📅 Google Calendar — Agendar citas reales</h2>
+            <span class="badge {'badge-pro' if clinica.google_calendar_id else 'badge-free'}">{'CONECTADO' if clinica.google_calendar_id else 'NO CONECTADO'}</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;">
+            Conecta tu Google Calendar para que las citas se sincronicen y se cree Google Meet automáticamente.
+          </p>
+          <div style="background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;padding:12px 14px;border-radius:10px;margin-bottom:14px;font-size:13px;line-height:1.6;">
+            <strong>📋 Pasos para conectar:</strong>
+            <ol style="margin:8px 0 0 18px;font-size:13px;">
+              <li>Abre tu Google Calendar (calendar.google.com)</li>
+              <li>Configuración del calendar que quieres usar → "Compartir con personas específicas"</li>
+              <li>Agrega este email: <code style="background:white;padding:2px 6px;border-radius:4px;font-weight:700;">{esc(get_sa_email())}</code></li>
+              <li>Permisos: <strong>"Hacer cambios y administrar uso compartido"</strong></li>
+              <li>Copia el <strong>Calendar ID</strong> (igual al email de Google si es tu calendar principal)</li>
+              <li>Pégalo abajo y guarda</li>
+            </ol>
+          </div>
+          <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Calendar ID</label>
+          <input type="text" name="google_calendar_id" value="{esc(clinica.google_calendar_id)}" placeholder="tucorreo@gmail.com o ID@group.calendar.google.com" class="input">
+        </div>
+
         <!-- BRANDING (solo Pro y Studio) -->
         <div class="card">
           <h2 style="font-size:16px;font-weight:700;margin-bottom:6px;">🎨 Branding</h2>
@@ -2029,6 +2064,7 @@ async def guardar_config(
     instagram_account_id: str = Form(""),
     instagram_token: str = Form(""),
     google_sheet_id: str = Form(""),
+    google_calendar_id: str = Form(""),
     logo_url: str = Form(""),
     color_primario: str = Form("#FF3B30"),
     clinic_session: Optional[str] = Cookie(None),
@@ -2051,6 +2087,7 @@ async def guardar_config(
             if instagram_account_id.strip(): c.instagram_account_id = instagram_account_id.strip()
             if instagram_token.strip(): c.instagram_token = instagram_token.strip()
             c.google_sheet_id = google_sheet_id.strip()
+            c.google_calendar_id = google_calendar_id.strip()
             if c.plan != "free":
                 c.logo_url = logo_url.strip()
                 c.color_primario = color_primario
@@ -3551,6 +3588,335 @@ async def superadmin_cambiar_plan(
             c.monto_mensual_usd = monto_usd
             await session.commit()
     return RedirectResponse(f"/clinic/superadmin/clinicas/{clinica_id}", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# 18) CITAS — Agenda con Google Calendar integrado
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/citas", response_class=HTMLResponse)
+async def vista_citas(
+    creado: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Lista las citas (locales + Google Calendar si está conectado)."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    async with async_session() as session:
+        citas = list((await session.execute(
+            select(CitaClinic).where(CitaClinic.clinica_id == clinica.id)
+            .order_by(CitaClinic.fecha_hora.desc())
+            .limit(100)
+        )).scalars().all())
+        # Pre-cargar nombres de pacientes
+        pids = [c.paciente_id for c in citas if c.paciente_id]
+        nombres = {}
+        if pids:
+            for row in (await session.execute(
+                select(Paciente.id, Paciente.nombre, Paciente.telefono).where(Paciente.id.in_(pids))
+            )).all():
+                nombres[row[0]] = (row[1], row[2])
+
+    # Si tiene Calendar conectado, traer eventos también
+    eventos_gcal = []
+    calendar_conectado = bool(clinica.google_calendar_id)
+    if calendar_conectado:
+        try:
+            from agent.clinic_calendar import listar_eventos
+            eventos_gcal = listar_eventos(clinica.google_calendar_id, dias=14, max_resultados=20)
+        except Exception:
+            pass
+
+    estado_colors = {
+        "agendada": "#3B82F6", "confirmada": "#10B981",
+        "completada": "#A855F7", "no_show": "#EF4444", "cancelada": "#78716C",
+    }
+
+    if citas:
+        filas = ""
+        for c in citas:
+            nombre, tel = nombres.get(c.paciente_id, ("—", ""))
+            color = estado_colors.get(c.estado, "#78716C")
+            fecha = c.fecha_hora.strftime("%d/%m/%Y %H:%M") if c.fecha_hora else "—"
+            meet_link = ""
+            if c.google_event_id:
+                meet_link = f'<a href="https://calendar.google.com/calendar/event?eid={c.google_event_id}" target="_blank" style="color:#3B82F6;font-size:12px;">🔗 Calendar</a>'
+            filas += f"""
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:14px;font-weight:600;">{fecha}</td>
+                <td style="padding:14px;">
+                  <a href="/clinic/app/pacientes/{c.paciente_id}" style="font-weight:600;color:var(--text);">{html.escape(nombre)}</a>
+                  <div style="font-size:11px;color:var(--text-soft);">{html.escape(tel or '')}</div>
+                </td>
+                <td style="padding:14px;color:var(--text-soft);font-size:13px;">{html.escape(c.motivo or '—')}</td>
+                <td style="padding:14px;">
+                  <span style="background:{color}20;color:{color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;">{html.escape(c.estado or '')}</span>
+                </td>
+                <td style="padding:14px;color:var(--text-soft);">{c.duracion_min} min · {meet_link}</td>
+                <td style="padding:14px;">
+                  <form method="post" action="/clinic/app/citas/{c.id}/cancelar" style="margin:0;"
+                        onsubmit="return confirm('¿Cancelar esta cita?');">
+                    <button type="submit" style="background:transparent;color:#EF4444;border:1px solid #EF4444;padding:6px 10px;border-radius:6px;font-size:11px;cursor:pointer;">Cancelar</button>
+                  </form>
+                </td>
+              </tr>"""
+        contenido_tabla = f"""
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="background:#1c1917;color:white;">
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Fecha</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Paciente</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Motivo</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Estado</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Detalles</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;"></th>
+          </tr></thead>
+          <tbody>{filas}</tbody>
+        </table>"""
+    else:
+        contenido_tabla = """
+        <div style="text-align:center;padding:60px 20px;color:var(--text-soft);">
+          <div style="font-size:64px;margin-bottom:16px;">📅</div>
+          <h3 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px;">Sin citas agendadas</h3>
+          <p style="margin-bottom:24px;">Agenda tu primera cita y se sincronizará automáticamente con Google Calendar.</p>
+          <a href="/clinic/app/citas/nueva" class="btn btn-primary">+ Nueva cita</a>
+        </div>"""
+
+    banner_calendar = ""
+    if not calendar_conectado:
+        banner_calendar = """
+        <div style="background:#FEF3C7;border:1px solid #F59E0B;color:#78350F;padding:14px 18px;border-radius:12px;margin-bottom:18px;font-size:14px;">
+          ⚙️ <strong>Conecta Google Calendar</strong> para que tus citas se sincronicen automáticamente y reciban invitación con Google Meet.
+          <a href="/clinic/app/configuracion" style="font-weight:700;color:#78350F;">Conectar →</a>
+        </div>"""
+
+    banner_creado = ""
+    if creado:
+        banner_creado = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Cita agendada correctamente</div>'
+
+    eventos_html = ""
+    if eventos_gcal:
+        items = ""
+        for e in eventos_gcal[:5]:
+            try:
+                from datetime import datetime as _dt
+                fecha_str = e['inicio'][:16].replace('T', ' ')
+            except Exception:
+                fecha_str = e['inicio']
+            items += f'<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;"><strong>{html.escape(e["titulo"][:50])}</strong> · <span style="color:var(--text-soft);">{fecha_str}</span></div>'
+        eventos_html = f"""
+        <div class="card" style="margin-bottom:18px;">
+          <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;color:var(--text-soft);letter-spacing:1px;margin-bottom:10px;">📅 Próximos eventos en tu Google Calendar</h3>
+          {items}
+        </div>"""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Citas - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("citas", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:14px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Citas</h1>
+          <p style="color:var(--text-soft);">{len(citas)} citas locales · {('✓ Calendar conectado' if calendar_conectado else '⚠ Sin Calendar')}</p>
+        </div>
+        <a href="/clinic/app/citas/nueva" class="btn btn-primary">+ Nueva cita</a>
+      </div>
+      {banner_calendar}
+      {banner_creado}
+      {eventos_html}
+      <div class="card" style="padding:0;overflow:hidden;">{contenido_tabla}</div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.get("/app/citas/nueva", response_class=HTMLResponse)
+async def nueva_cita_form(clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    async with async_session() as session:
+        pacientes = list((await session.execute(
+            select(Paciente).where(Paciente.clinica_id == clinica.id).order_by(Paciente.nombre).limit(500)
+        )).scalars().all())
+
+    opciones = "".join(
+        f'<option value="{p.id}" data-email="{html.escape(p.email or "", quote=True)}">{html.escape(p.nombre)} ({html.escape(p.telefono or "")})</option>'
+        for p in pacientes
+    )
+    from datetime import datetime as _dt
+    fecha_minima = _dt.now().strftime("%Y-%m-%dT%H:%M")
+    calendar_conectado = bool(clinica.google_calendar_id)
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Nueva cita</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("citas", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/citas" style="font-size:13px;color:var(--text-soft);">← Volver</a>
+      <h1 style="font-size:26px;font-weight:800;margin:8px 0 24px;">Agendar cita</h1>
+
+      <div class="card" style="max-width:600px;">
+        {('<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;">✓ Google Calendar conectado — la cita se creará automáticamente con Google Meet.</div>' if calendar_conectado else '<div style="background:#FEF3C7;border:1px solid #F59E0B;color:#78350F;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;">⚠ Sin Google Calendar conectado. La cita se guardará solo localmente. <a href="/clinic/app/configuracion" style="font-weight:700;">Conectar</a></div>')}
+
+        <form method="post" action="/clinic/app/citas/nueva" style="display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Paciente *</label>
+            <select name="paciente_id" required class="input" autofocus>
+              <option value="">Selecciona un paciente...</option>
+              {opciones}
+            </select>
+            {('<p style="font-size:12px;color:var(--text-soft);margin-top:6px;">No tienes pacientes. <a href="/clinic/app/pacientes/nuevo">Crear uno</a> primero.</p>' if not pacientes else '')}
+          </div>
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Fecha y hora *</label>
+              <input type="datetime-local" name="fecha_hora" min="{fecha_minima}" required class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Duración (min)</label>
+              <select name="duracion_min" class="input">
+                <option value="15">15 min</option>
+                <option value="30" selected>30 min</option>
+                <option value="45">45 min</option>
+                <option value="60">60 min</option>
+                <option value="90">90 min</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Motivo</label>
+            <input type="text" name="motivo" placeholder="Control, valoración, limpieza..." class="input">
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Notas</label>
+            <textarea name="notas" rows="3" class="input" style="resize:vertical;font-family:inherit;"
+                      placeholder="Información adicional para el paciente..."></textarea>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button type="submit" class="btn btn-primary" {('disabled' if not pacientes else '')}>📅 Agendar cita</button>
+            <a href="/clinic/app/citas" class="btn btn-ghost">Cancelar</a>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/citas/nueva", response_class=HTMLResponse)
+async def nueva_cita_procesar(
+    paciente_id: int = Form(...),
+    fecha_hora: str = Form(...),
+    duracion_min: int = Form(30),
+    motivo: str = Form(""),
+    notas: str = Form(""),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    # Parsear fecha
+    try:
+        dt = datetime.fromisoformat(fecha_hora)
+    except ValueError:
+        return RedirectResponse("/clinic/app/citas?error=fecha_invalida", status_code=303)
+
+    google_event_id = ""
+    link_meet = ""
+
+    # Si tiene Calendar conectado, crear evento ahí
+    if clinica.google_calendar_id:
+        try:
+            from agent.clinic_calendar import crear_evento
+            async with async_session() as session:
+                paciente = (await session.execute(
+                    select(Paciente).where(Paciente.id == paciente_id)
+                )).scalar_one_or_none()
+            titulo = f"{paciente.nombre if paciente else 'Paciente'} - {motivo or 'Cita'}"
+            descripcion_evento = f"""Paciente: {paciente.nombre if paciente else ''}
+Teléfono: {paciente.telefono if paciente else ''}
+Email: {paciente.email if paciente else ''}
+Motivo: {motivo}
+Notas: {notas}
+---
+Cita agendada desde Lapora Clinic
+{clinica.nombre}"""
+            resultado = crear_evento(
+                calendar_id=clinica.google_calendar_id,
+                fecha_hora=dt,
+                titulo=titulo,
+                descripcion=descripcion_evento,
+                duracion_min=duracion_min,
+                email_paciente=paciente.email if paciente and paciente.email else None,
+            )
+            if resultado.get("exito"):
+                google_event_id = resultado.get("evento_id", "")
+                link_meet = resultado.get("link_meet", "")
+        except Exception:
+            pass  # Si falla Calendar, igual guardamos en BD
+
+    async with async_session() as session:
+        session.add(CitaClinic(
+            clinica_id=sesion["clinica_id"],
+            paciente_id=paciente_id,
+            fecha_hora=dt,
+            duracion_min=duracion_min,
+            motivo=motivo.strip(),
+            notas=notas.strip(),
+            estado="agendada",
+            google_event_id=google_event_id,
+        ))
+        # Incrementar contador en paciente
+        p = (await session.execute(select(Paciente).where(Paciente.id == paciente_id))).scalar_one_or_none()
+        if p:
+            p.total_citas = (p.total_citas or 0) + 1
+            p.ultima_cita = dt
+        await session.commit()
+
+    return RedirectResponse("/clinic/app/citas?creado=1", status_code=303)
+
+
+@router.post("/app/citas/{cita_id}/cancelar", response_class=HTMLResponse)
+async def cancelar_cita(
+    cita_id: int,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        cita = (await session.execute(
+            select(CitaClinic).where(CitaClinic.id == cita_id)
+            .where(CitaClinic.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if not cita:
+            return RedirectResponse("/clinic/app/citas", status_code=303)
+
+        # Cancelar también en Google Calendar
+        if cita.google_event_id:
+            clinica = await obtener_clinica(sesion["clinica_id"])
+            if clinica and clinica.google_calendar_id:
+                try:
+                    from agent.clinic_calendar import cancelar_evento
+                    cancelar_evento(clinica.google_calendar_id, cita.google_event_id)
+                except Exception:
+                    pass
+
+        cita.estado = "cancelada"
+        await session.commit()
+
+    return RedirectResponse("/clinic/app/citas", status_code=303)
 
 
 @router.api_route("/superadmin/clinicas/{clinica_id}/login", methods=["GET", "POST"])

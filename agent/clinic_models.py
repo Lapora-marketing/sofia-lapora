@@ -56,6 +56,7 @@ class Clinica(Base):
     instagram_account_id: Mapped[str] = mapped_column(String(50), default="", nullable=True)
     instagram_token:   Mapped[str] = mapped_column(String(500), default="", nullable=True)
     google_sheet_id:   Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    google_calendar_id: Mapped[str] = mapped_column(String(200), default="", nullable=True)
 
     # Suspensión / billing
     congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -370,6 +371,7 @@ async def aplicar_migraciones():
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS fecha_suspension TIMESTAMP",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS fecha_proximo_pago TIMESTAMP",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS monto_mensual_usd INTEGER DEFAULT 0",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS google_calendar_id VARCHAR(200) DEFAULT ''",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -388,6 +390,8 @@ async def aplicar_migraciones():
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN fecha_proximo_pago DATETIME")
                 if "monto_mensual_usd" not in columnas_existentes:
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN monto_mensual_usd INTEGER DEFAULT 0")
+                if "google_calendar_id" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN google_calendar_id VARCHAR(200) DEFAULT ''")
             except Exception:
                 pass  # Tabla no existe todavía, create_all la creará completa
 
