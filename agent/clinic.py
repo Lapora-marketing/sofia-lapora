@@ -546,12 +546,13 @@ async def vista_inbox(clinic_session: Optional[str] = Cookie(None)):
 
 
 # ════════════════════════════════════════════════════════════
-# 6) PACIENTES
+# 6) PACIENTES — CRUD completo
 # ════════════════════════════════════════════════════════════
 
 @router.get("/app/pacientes", response_class=HTMLResponse)
 async def vista_pacientes(
     q: Optional[str] = None,
+    creado: Optional[str] = None,
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -577,13 +578,24 @@ async def vista_pacientes(
             nombre = html.escape(p.nombre or "")
             tel = html.escape(p.telefono or "")
             email = html.escape(p.email or "")
+            estado = html.escape(p.estado or "nuevo")
             ult = p.ultimo_contacto.strftime("%d/%m/%Y") if p.ultimo_contacto else "—"
+            color_estado = {
+                "nuevo": "#3B82F6", "activo": "#10B981",
+                "inactivo": "#78716C", "dado_de_alta": "#A855F7",
+            }.get(estado, "#78716C")
             filas += f"""
-              <tr>
-                <td style="padding:14px;font-weight:600;">{nombre}</td>
-                <td style="padding:14px;color:var(--text-soft);">{tel}</td>
-                <td style="padding:14px;color:var(--text-soft);">{email}</td>
-                <td style="padding:14px;color:var(--text-soft);">{ult}</td>
+              <tr style="border-bottom:1px solid var(--border);transition:background 0.15s;"
+                  onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background='transparent'">
+                <td style="padding:14px;">
+                  <a href="/clinic/app/pacientes/{p.id}" style="font-weight:600;color:var(--text);">{nombre}</a>
+                </td>
+                <td style="padding:14px;color:var(--text-soft);font-family:monospace;font-size:13px;">{tel}</td>
+                <td style="padding:14px;color:var(--text-soft);font-size:13px;">{email}</td>
+                <td style="padding:14px;">
+                  <span style="background:{color_estado}20;color:{color_estado};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;">{estado}</span>
+                </td>
+                <td style="padding:14px;color:var(--text-soft);font-size:13px;">{ult}</td>
               </tr>"""
         contenido = f"""
         <table style="width:100%;border-collapse:collapse;">
@@ -591,6 +603,7 @@ async def vista_pacientes(
             <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Nombre</th>
             <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Teléfono</th>
             <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Email</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Estado</th>
             <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Último contacto</th>
           </tr></thead>
           <tbody>{filas}</tbody>
@@ -600,9 +613,16 @@ async def vista_pacientes(
         <div style="text-align:center;padding:60px 20px;color:var(--text-soft);">
           <div style="font-size:64px;margin-bottom:16px;">👥</div>
           <h3 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px;">Sin pacientes aún</h3>
-          <p style="margin-bottom:24px;">Sincronizá con Google Sheets para importar todos tus pacientes existentes.</p>
-          <a href="/clinic/app/configuracion" class="btn btn-primary">Conectar Google Sheets →</a>
+          <p style="margin-bottom:24px;">Crea tu primer paciente manualmente o sincroniza con Google Sheets.</p>
+          <div style="display:flex;gap:10px;justify-content:center;">
+            <a href="/clinic/app/pacientes/nuevo" class="btn btn-primary">+ Nuevo paciente</a>
+            <a href="/clinic/app/configuracion" class="btn btn-ghost">Conectar Google Sheets</a>
+          </div>
         </div>"""
+
+    creado_banner = ""
+    if creado:
+        creado_banner = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Paciente guardado correctamente</div>'
 
     q_val = html.escape(q or "", quote=True)
     return HTMLResponse(f"""<!DOCTYPE html>
@@ -616,15 +636,429 @@ async def vista_pacientes(
           <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Pacientes</h1>
           <p style="color:var(--text-soft);">{len(pacientes)} pacientes registrados</p>
         </div>
-        <form method="get" action="/clinic/app/pacientes" style="display:flex;gap:10px;">
-          <input type="text" name="q" value="{q_val}" placeholder="Buscar por nombre, tel, email..." class="input" style="width:280px;">
-          <button type="submit" class="btn btn-ghost">Buscar</button>
-        </form>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <form method="get" action="/clinic/app/pacientes" style="display:flex;gap:8px;">
+            <input type="text" name="q" value="{q_val}" placeholder="Buscar..." class="input" style="width:240px;">
+            <button type="submit" class="btn btn-ghost">Buscar</button>
+          </form>
+          <a href="/clinic/app/pacientes/nuevo" class="btn btn-primary">+ Nuevo</a>
+        </div>
       </div>
+      {creado_banner}
       <div class="card" style="padding:0;overflow:hidden;">{contenido}</div>
     </main>
   </div>
 </body></html>""")
+
+
+@router.get("/app/pacientes/nuevo", response_class=HTMLResponse)
+async def nuevo_paciente_form(clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Nuevo paciente - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/pacientes" style="font-size:13px;color:var(--text-soft);">← Volver a pacientes</a>
+      <h1 style="font-size:26px;font-weight:800;margin:8px 0 24px;">Nuevo paciente</h1>
+
+      <div class="card" style="max-width:680px;">
+        <form method="post" action="/clinic/app/pacientes/nuevo" style="display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Nombre completo *</label>
+            <input type="text" name="nombre" required class="input" autofocus>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Teléfono / WhatsApp</label>
+              <input type="text" name="telefono" placeholder="+57 300 123 4567" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Email</label>
+              <input type="email" name="email" class="input">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Documento</label>
+              <input type="text" name="documento" placeholder="CC 12345678" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Género</label>
+              <select name="genero" class="input">
+                <option value="">—</option>
+                <option value="M">Masculino</option>
+                <option value="F">Femenino</option>
+                <option value="O">Otro</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Estado</label>
+              <select name="estado" class="input">
+                <option value="nuevo">Nuevo</option>
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Tratamiento actual</label>
+            <input type="text" name="tratamiento_actual" placeholder="Ortodoncia, Limpieza, etc." class="input">
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Alergias</label>
+            <input type="text" name="alergias" placeholder="Penicilina, latex..." class="input">
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Notas básicas</label>
+            <textarea name="notas_basicas" rows="3" class="input" style="resize:vertical;font-family:inherit;"
+                      placeholder="Cualquier información relevante del paciente..."></textarea>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:8px;">
+            <button type="submit" class="btn btn-primary">Guardar paciente</button>
+            <a href="/clinic/app/pacientes" class="btn btn-ghost">Cancelar</a>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/pacientes/nuevo", response_class=HTMLResponse)
+async def nuevo_paciente_procesar(
+    nombre: str = Form(...),
+    telefono: str = Form(""),
+    email: str = Form(""),
+    documento: str = Form(""),
+    genero: str = Form(""),
+    estado: str = Form("nuevo"),
+    tratamiento_actual: str = Form(""),
+    alergias: str = Form(""),
+    notas_basicas: str = Form(""),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        ahora = datetime.utcnow()
+        session.add(Paciente(
+            clinica_id=sesion["clinica_id"],
+            nombre=nombre.strip(),
+            telefono=telefono.strip(),
+            email=email.strip().lower(),
+            documento=documento.strip(),
+            genero=genero,
+            estado=estado,
+            tratamiento_actual=tratamiento_actual.strip(),
+            alergias=alergias.strip(),
+            notas_basicas=notas_basicas.strip(),
+            fuente="manual",
+            primer_contacto=ahora,
+            ultimo_contacto=ahora,
+        ))
+        await session.commit()
+
+    return RedirectResponse("/clinic/app/pacientes?creado=1", status_code=303)
+
+
+@router.get("/app/pacientes/{paciente_id}", response_class=HTMLResponse)
+async def detalle_paciente(
+    paciente_id: int,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    async with async_session() as session:
+        paciente = (await session.execute(
+            select(Paciente)
+            .where(Paciente.id == paciente_id)
+            .where(Paciente.clinica_id == clinica.id)
+        )).scalar_one_or_none()
+
+        if not paciente:
+            return HTMLResponse("<h1>Paciente no encontrado</h1>", status_code=404)
+
+        mensajes = list((await session.execute(
+            select(MensajeUnificado)
+            .where(MensajeUnificado.paciente_id == paciente_id)
+            .order_by(desc(MensajeUnificado.timestamp))
+            .limit(20)
+        )).scalars().all())
+        llamadas = list((await session.execute(
+            select(Llamada).where(Llamada.paciente_id == paciente_id).order_by(desc(Llamada.timestamp))
+        )).scalars().all())
+        citas = list((await session.execute(
+            select(CitaClinic).where(CitaClinic.paciente_id == paciente_id).order_by(desc(CitaClinic.fecha_hora))
+        )).scalars().all())
+
+    nombre = html.escape(paciente.nombre or "")
+    tel = html.escape(paciente.telefono or "—")
+    email = html.escape(paciente.email or "—")
+    estado = html.escape(paciente.estado or "")
+    color_estado = {
+        "nuevo": "#3B82F6", "activo": "#10B981",
+        "inactivo": "#78716C", "dado_de_alta": "#A855F7",
+    }.get(estado, "#78716C")
+
+    timeline_html = ""
+    eventos = []
+    for m in mensajes:
+        eventos.append((m.timestamp, "💬", f"Mensaje {m.direccion} ({m.canal})",
+                        html.escape((m.contenido or "")[:120])))
+    for l in llamadas:
+        eventos.append((l.timestamp, "📞", f"Llamada {l.direccion}",
+                        html.escape((l.notas or "")[:120])))
+    for c in citas:
+        eventos.append((c.fecha_hora, "📅", f"Cita {c.estado}",
+                        html.escape((c.motivo or "")[:120])))
+    eventos.sort(key=lambda x: x[0] or datetime.min, reverse=True)
+
+    if eventos:
+        for ts, icon, titulo, texto in eventos[:20]:
+            fecha = ts.strftime("%d/%m/%Y %H:%M") if ts else ""
+            timeline_html += f"""
+            <div style="display:flex;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);">
+              <div style="font-size:22px;">{icon}</div>
+              <div style="flex:1;">
+                <div style="font-weight:600;font-size:14px;">{titulo}</div>
+                <div style="font-size:13px;color:var(--text-soft);margin-top:2px;">{texto}</div>
+                <div style="font-size:11px;color:var(--text-soft);margin-top:4px;">{fecha}</div>
+              </div>
+            </div>"""
+    else:
+        timeline_html = '<div style="text-align:center;padding:40px;color:var(--text-soft);"><div style="font-size:48px;">⏳</div><p style="margin-top:10px;">Sin actividad todavía</p></div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>{nombre} - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/pacientes" style="font-size:13px;color:var(--text-soft);">← Pacientes</a>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 24px;flex-wrap:wrap;gap:14px;">
+        <div>
+          <h1 style="font-size:28px;font-weight:800;">{nombre}</h1>
+          <div style="display:flex;gap:10px;margin-top:6px;align-items:center;">
+            <span style="background:{color_estado}20;color:{color_estado};padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700;text-transform:uppercase;">{estado}</span>
+            <span style="color:var(--text-soft);font-size:13px;">{html.escape(paciente.tratamiento_actual or "Sin tratamiento")}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;">
+          {f'<a href="https://wa.me/{html.escape(paciente.telefono.replace("+", "").replace(" ", ""))}" target="_blank" class="btn btn-primary" style="background:#25D366;box-shadow:0 4px 12px rgba(37,211,102,0.25);">💬 WhatsApp</a>' if paciente.telefono else ''}
+          <a href="/clinic/app/pacientes/{paciente.id}/editar" class="btn btn-ghost">✏️ Editar</a>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+        <div class="card">
+          <h3 style="font-size:14px;font-weight:700;text-transform:uppercase;color:var(--text-soft);letter-spacing:1px;margin-bottom:14px;">📇 Contacto</h3>
+          <div style="display:grid;gap:10px;font-size:14px;">
+            <div><strong style="display:inline-block;width:120px;color:var(--text-soft);">Teléfono</strong> <span style="font-family:monospace;">{tel}</span></div>
+            <div><strong style="display:inline-block;width:120px;color:var(--text-soft);">Email</strong> {email}</div>
+            <div><strong style="display:inline-block;width:120px;color:var(--text-soft);">Documento</strong> {html.escape(paciente.documento or "—")}</div>
+            <div><strong style="display:inline-block;width:120px;color:var(--text-soft);">Alergias</strong> {html.escape(paciente.alergias or "—")}</div>
+          </div>
+          <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+            <strong style="color:var(--text-soft);font-size:13px;display:block;margin-bottom:6px;">📝 Notas</strong>
+            <p style="font-size:14px;line-height:1.6;color:var(--text);">{html.escape(paciente.notas_basicas or "Sin notas todavía.")}</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="font-size:14px;font-weight:700;text-transform:uppercase;color:var(--text-soft);letter-spacing:1px;margin-bottom:14px;">⏱️ Timeline</h3>
+          {timeline_html}
+        </div>
+      </div>
+
+      <div style="margin-top:18px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+        <div class="card" style="text-align:center;">
+          <div style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Mensajes</div>
+          <div style="font-size:28px;font-weight:800;color:var(--primary);margin-top:4px;">{len(mensajes)}</div>
+        </div>
+        <div class="card" style="text-align:center;">
+          <div style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Llamadas</div>
+          <div style="font-size:28px;font-weight:800;margin-top:4px;">{len(llamadas)}</div>
+        </div>
+        <div class="card" style="text-align:center;">
+          <div style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Citas</div>
+          <div style="font-size:28px;font-weight:800;margin-top:4px;">{len(citas)}</div>
+        </div>
+        <div class="card" style="text-align:center;">
+          <div style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Valor total</div>
+          <div style="font-size:28px;font-weight:800;color:var(--green);margin-top:4px;">${paciente.valor_total:,}</div>
+        </div>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.get("/app/pacientes/{paciente_id}/editar", response_class=HTMLResponse)
+async def editar_paciente_form(
+    paciente_id: int,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    async with async_session() as session:
+        p = (await session.execute(
+            select(Paciente).where(Paciente.id == paciente_id).where(Paciente.clinica_id == clinica.id)
+        )).scalar_one_or_none()
+        if not p:
+            return HTMLResponse("<h1>Paciente no encontrado</h1>", status_code=404)
+
+    def esc(s): return html.escape(s or "", quote=True)
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Editar {esc(p.nombre)}</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/pacientes/{p.id}" style="font-size:13px;color:var(--text-soft);">← Volver al paciente</a>
+      <h1 style="font-size:26px;font-weight:800;margin:8px 0 24px;">Editar paciente</h1>
+      <div class="card" style="max-width:680px;">
+        <form method="post" action="/clinic/app/pacientes/{p.id}/editar" style="display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Nombre completo *</label>
+            <input type="text" name="nombre" value="{esc(p.nombre)}" required class="input">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Teléfono</label>
+              <input type="text" name="telefono" value="{esc(p.telefono)}" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Email</label>
+              <input type="email" name="email" value="{esc(p.email)}" class="input">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Documento</label>
+              <input type="text" name="documento" value="{esc(p.documento)}" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Género</label>
+              <select name="genero" class="input">
+                <option value="" {'selected' if not p.genero else ''}>—</option>
+                <option value="M" {'selected' if p.genero == 'M' else ''}>Masculino</option>
+                <option value="F" {'selected' if p.genero == 'F' else ''}>Femenino</option>
+                <option value="O" {'selected' if p.genero == 'O' else ''}>Otro</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Estado</label>
+              <select name="estado" class="input">
+                <option value="nuevo" {'selected' if p.estado == 'nuevo' else ''}>Nuevo</option>
+                <option value="activo" {'selected' if p.estado == 'activo' else ''}>Activo</option>
+                <option value="inactivo" {'selected' if p.estado == 'inactivo' else ''}>Inactivo</option>
+                <option value="dado_de_alta" {'selected' if p.estado == 'dado_de_alta' else ''}>Dado de alta</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Tratamiento actual</label>
+            <input type="text" name="tratamiento_actual" value="{esc(p.tratamiento_actual)}" class="input">
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Alergias</label>
+            <input type="text" name="alergias" value="{esc(p.alergias)}" class="input">
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Notas</label>
+            <textarea name="notas_basicas" rows="4" class="input" style="resize:vertical;font-family:inherit;">{esc(p.notas_basicas)}</textarea>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:8px;justify-content:space-between;">
+            <div style="display:flex;gap:10px;">
+              <button type="submit" class="btn btn-primary">Guardar cambios</button>
+              <a href="/clinic/app/pacientes/{p.id}" class="btn btn-ghost">Cancelar</a>
+            </div>
+            <form method="post" action="/clinic/app/pacientes/{p.id}/eliminar"
+                  onsubmit="return confirm('¿Eliminar paciente {esc(p.nombre)}? Esta acción NO se puede deshacer.');">
+              <button type="submit" style="background:transparent;color:#EF4444;border:1.5px solid #EF4444;padding:12px 22px;border-radius:10px;font-weight:600;cursor:pointer;">🗑️ Eliminar</button>
+            </form>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/pacientes/{paciente_id}/editar", response_class=HTMLResponse)
+async def editar_paciente_procesar(
+    paciente_id: int,
+    nombre: str = Form(...),
+    telefono: str = Form(""),
+    email: str = Form(""),
+    documento: str = Form(""),
+    genero: str = Form(""),
+    estado: str = Form("nuevo"),
+    tratamiento_actual: str = Form(""),
+    alergias: str = Form(""),
+    notas_basicas: str = Form(""),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        p = (await session.execute(
+            select(Paciente)
+            .where(Paciente.id == paciente_id)
+            .where(Paciente.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if not p:
+            return HTMLResponse("<h1>Paciente no encontrado</h1>", status_code=404)
+        p.nombre = nombre.strip()
+        p.telefono = telefono.strip()
+        p.email = email.strip().lower()
+        p.documento = documento.strip()
+        p.genero = genero
+        p.estado = estado
+        p.tratamiento_actual = tratamiento_actual.strip()
+        p.alergias = alergias.strip()
+        p.notas_basicas = notas_basicas.strip()
+        await session.commit()
+
+    return RedirectResponse(f"/clinic/app/pacientes/{paciente_id}", status_code=303)
+
+
+@router.post("/app/pacientes/{paciente_id}/eliminar", response_class=HTMLResponse)
+async def eliminar_paciente(
+    paciente_id: int,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        p = (await session.execute(
+            select(Paciente)
+            .where(Paciente.id == paciente_id)
+            .where(Paciente.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if p:
+            await session.delete(p)
+            await session.commit()
+
+    return RedirectResponse("/clinic/app/pacientes", status_code=303)
 
 
 # ════════════════════════════════════════════════════════════
@@ -650,32 +1084,555 @@ def _vista_simple(titulo: str, descripcion: str, icono: str, cta_url: str, cta_l
 </body></html>""")
 
 
+# ════════════════════════════════════════════════════════════
+# 7) LLAMADAS — Bitácora con CRUD
+# ════════════════════════════════════════════════════════════
+
 @router.get("/app/llamadas", response_class=HTMLResponse)
-async def vista_llamadas(clinic_session: Optional[str] = Cookie(None)):
+async def vista_llamadas(
+    creado: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
     sesion = obtener_sesion(clinic_session)
     if not sesion:
         return RedirectResponse("/clinic/login", status_code=303)
     clinica = await obtener_clinica(sesion["clinica_id"])
-    return _vista_simple("Llamadas", "Bitácora de llamadas con tus pacientes", "📞",
-                          "/clinic/app/", "Volver al dashboard", sesion, clinica, "llamadas")
 
+    async with async_session() as session:
+        llamadas = list((await session.execute(
+            select(Llamada).where(Llamada.clinica_id == clinica.id).order_by(desc(Llamada.timestamp)).limit(200)
+        )).scalars().all())
+        # Pre-cargar nombres de pacientes
+        pids = [l.paciente_id for l in llamadas if l.paciente_id]
+        nombres = {}
+        if pids:
+            for p in (await session.execute(
+                select(Paciente.id, Paciente.nombre).where(Paciente.id.in_(pids))
+            )).all():
+                nombres[p[0]] = p[1]
+
+    icon_dir = {"entrada": "📥", "salida": "📤", "perdida": "❌"}
+    color_resultado = {
+        "interesado": "#10B981", "agendado": "#3B82F6",
+        "no_interesado": "#EF4444", "volver_a_llamar": "#F59E0B",
+    }
+
+    if llamadas:
+        filas = ""
+        for l in llamadas:
+            nombre = html.escape(nombres.get(l.paciente_id, "—"))
+            dir_icon = icon_dir.get(l.direccion, "📞")
+            duracion = f"{l.duracion_seg // 60}:{l.duracion_seg % 60:02d}" if l.duracion_seg else "—"
+            color_r = color_resultado.get(l.resultado, "#78716C")
+            resultado = html.escape(l.resultado or "—")
+            ts = l.timestamp.strftime("%d/%m %H:%M") if l.timestamp else "—"
+            notas = html.escape((l.notas or "")[:80])
+            filas += f"""
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:14px;font-size:18px;">{dir_icon}</td>
+                <td style="padding:14px;">
+                  <a href="/clinic/app/pacientes/{l.paciente_id}" style="font-weight:600;color:var(--text);">{nombre}</a>
+                  <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">{notas}</div>
+                </td>
+                <td style="padding:14px;color:var(--text-soft);font-family:monospace;">{duracion}</td>
+                <td style="padding:14px;">
+                  <span style="background:{color_r}20;color:{color_r};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;">{resultado}</span>
+                </td>
+                <td style="padding:14px;color:var(--text-soft);font-size:13px;">{ts}</td>
+              </tr>"""
+        contenido = f"""
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="background:#1c1917;color:white;">
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;width:50px;"></th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Paciente / Notas</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Duración</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Resultado</th>
+            <th style="padding:14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Fecha</th>
+          </tr></thead>
+          <tbody>{filas}</tbody>
+        </table>"""
+    else:
+        contenido = """
+        <div style="text-align:center;padding:60px 20px;color:var(--text-soft);">
+          <div style="font-size:64px;margin-bottom:16px;">📞</div>
+          <h3 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px;">Sin llamadas registradas</h3>
+          <p style="margin-bottom:24px;">Registra cada llamada con tus pacientes para no perder seguimiento.</p>
+          <a href="/clinic/app/llamadas/nueva" class="btn btn-primary">+ Registrar llamada</a>
+        </div>"""
+
+    banner = ""
+    if creado:
+        banner = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Llamada registrada correctamente</div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Llamadas - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("llamadas", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Llamadas</h1>
+          <p style="color:var(--text-soft);">{len(llamadas)} llamadas registradas</p>
+        </div>
+        <a href="/clinic/app/llamadas/nueva" class="btn btn-primary">+ Registrar llamada</a>
+      </div>
+      {banner}
+      <div class="card" style="padding:0;overflow:hidden;">{contenido}</div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.get("/app/llamadas/nueva", response_class=HTMLResponse)
+async def nueva_llamada_form(clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    async with async_session() as session:
+        pacientes = list((await session.execute(
+            select(Paciente).where(Paciente.clinica_id == clinica.id).order_by(Paciente.nombre).limit(500)
+        )).scalars().all())
+
+    opciones = "".join(f'<option value="{p.id}">{html.escape(p.nombre)} ({html.escape(p.telefono or "")})</option>' for p in pacientes)
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Nueva llamada - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("llamadas", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/llamadas" style="font-size:13px;color:var(--text-soft);">← Volver</a>
+      <h1 style="font-size:26px;font-weight:800;margin:8px 0 24px;">Registrar llamada</h1>
+      <div class="card" style="max-width:560px;">
+        <form method="post" action="/clinic/app/llamadas/nueva" style="display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Paciente *</label>
+            <select name="paciente_id" required class="input" autofocus>
+              <option value="">Selecciona un paciente...</option>
+              {opciones}
+            </select>
+            {('<p style="font-size:12px;color:var(--text-soft);margin-top:6px;">No tienes pacientes todavía. <a href="/clinic/app/pacientes/nuevo">Crear uno</a> primero.</p>' if not pacientes else '')}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Dirección</label>
+              <select name="direccion" class="input">
+                <option value="entrada">📥 Entrada</option>
+                <option value="salida">📤 Salida</option>
+                <option value="perdida">❌ Perdida</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Duración (min)</label>
+              <input type="number" name="duracion_min" min="0" placeholder="5" class="input">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Resultado</label>
+            <select name="resultado" class="input">
+              <option value="">—</option>
+              <option value="interesado">✓ Interesado</option>
+              <option value="agendado">📅 Agendado</option>
+              <option value="volver_a_llamar">🔄 Volver a llamar</option>
+              <option value="no_interesado">✗ No interesado</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Notas</label>
+            <textarea name="notas" rows="4" class="input" style="resize:vertical;font-family:inherit;"
+                      placeholder="Qué pidió el paciente, qué se acordó, próximos pasos..."></textarea>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button type="submit" class="btn btn-primary" {('disabled' if not pacientes else '')}>Guardar</button>
+            <a href="/clinic/app/llamadas" class="btn btn-ghost">Cancelar</a>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/llamadas/nueva", response_class=HTMLResponse)
+async def nueva_llamada_procesar(
+    paciente_id: int = Form(...),
+    direccion: str = Form("entrada"),
+    duracion_min: int = Form(0),
+    resultado: str = Form(""),
+    notas: str = Form(""),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        session.add(Llamada(
+            clinica_id=sesion["clinica_id"],
+            paciente_id=paciente_id,
+            direccion=direccion,
+            duracion_seg=duracion_min * 60,
+            resultado=resultado,
+            notas=notas.strip(),
+        ))
+        await session.commit()
+
+    return RedirectResponse("/clinic/app/llamadas?creado=1", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# 8) PLANTILLAS — Respuestas rápidas
+# ════════════════════════════════════════════════════════════
 
 @router.get("/app/plantillas", response_class=HTMLResponse)
-async def vista_plantillas(clinic_session: Optional[str] = Cookie(None)):
+async def vista_plantillas(
+    creado: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
     sesion = obtener_sesion(clinic_session)
     if not sesion:
         return RedirectResponse("/clinic/login", status_code=303)
     clinica = await obtener_clinica(sesion["clinica_id"])
-    return _vista_simple("Plantillas", "Respuestas rápidas para preguntas frecuentes", "📝",
-                          "/clinic/app/", "Volver al dashboard", sesion, clinica, "plantillas")
 
+    async with async_session() as session:
+        plantillas = list((await session.execute(
+            select(PlantillaRespuesta).where(PlantillaRespuesta.clinica_id == clinica.id)
+            .order_by(desc(PlantillaRespuesta.usos))
+        )).scalars().all())
+
+    if plantillas:
+        cards = ""
+        for pl in plantillas:
+            cards += f"""
+            <div class="card" style="margin-bottom:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:start;gap:14px;">
+                <div style="flex:1;">
+                  <h3 style="font-size:15px;font-weight:700;margin-bottom:4px;">{html.escape(pl.titulo)}</h3>
+                  <div style="font-size:12px;color:var(--text-soft);margin-bottom:10px;">
+                    Categoría: {html.escape(pl.categoria or "general")} · Usada {pl.usos} veces
+                  </div>
+                  <p style="font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap;">{html.escape(pl.contenido)}</p>
+                </div>
+                <form method="post" action="/clinic/app/plantillas/{pl.id}/eliminar"
+                      onsubmit="return confirm('¿Eliminar esta plantilla?');">
+                  <button type="submit" style="background:transparent;color:#EF4444;border:1px solid #EF4444;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">🗑️</button>
+                </form>
+              </div>
+            </div>"""
+        contenido = cards
+    else:
+        contenido = """
+        <div class="card" style="text-align:center;padding:60px 20px;color:var(--text-soft);">
+          <div style="font-size:64px;margin-bottom:16px;">📝</div>
+          <h3 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px;">Sin plantillas todavía</h3>
+          <p style="margin-bottom:24px;">Crea respuestas rápidas para preguntas frecuentes (precios, horarios, ubicación).</p>
+          <a href="/clinic/app/plantillas/nueva" class="btn btn-primary">+ Crear plantilla</a>
+        </div>"""
+
+    banner = ""
+    if creado:
+        banner = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Plantilla guardada correctamente</div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Plantillas - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("plantillas", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Plantillas</h1>
+          <p style="color:var(--text-soft);">{len(plantillas)} respuestas rápidas</p>
+        </div>
+        <a href="/clinic/app/plantillas/nueva" class="btn btn-primary">+ Nueva plantilla</a>
+      </div>
+      {banner}
+      {contenido}
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.get("/app/plantillas/nueva", response_class=HTMLResponse)
+async def nueva_plantilla_form(clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Nueva plantilla - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("plantillas", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/plantillas" style="font-size:13px;color:var(--text-soft);">← Volver</a>
+      <h1 style="font-size:26px;font-weight:800;margin:8px 0 24px;">Nueva plantilla</h1>
+      <div class="card" style="max-width:680px;">
+        <form method="post" action="/clinic/app/plantillas/nueva" style="display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Título *</label>
+            <input type="text" name="titulo" required placeholder="Ej: Saludo inicial" class="input" autofocus>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Categoría</label>
+            <select name="categoria" class="input">
+              <option value="general">General</option>
+              <option value="saludo">Saludo</option>
+              <option value="precios">Precios</option>
+              <option value="horarios">Horarios</option>
+              <option value="ubicacion">Ubicación</option>
+              <option value="confirmacion">Confirmación</option>
+              <option value="seguimiento">Seguimiento</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Contenido *</label>
+            <textarea name="contenido" required rows="6" class="input" style="resize:vertical;font-family:inherit;"
+                      placeholder="¡Hola! Gracias por escribir a {{clinica}}. ¿En qué puedo ayudarte hoy?"></textarea>
+            <p style="font-size:12px;color:var(--text-soft);margin-top:6px;">
+              💡 Tip: Usá <code>{{nombre}}</code>, <code>{{clinica}}</code>, <code>{{tratamiento}}</code> como variables.
+            </p>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button type="submit" class="btn btn-primary">Guardar plantilla</button>
+            <a href="/clinic/app/plantillas" class="btn btn-ghost">Cancelar</a>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/plantillas/nueva", response_class=HTMLResponse)
+async def nueva_plantilla_procesar(
+    titulo: str = Form(...),
+    categoria: str = Form("general"),
+    contenido: str = Form(...),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        session.add(PlantillaRespuesta(
+            clinica_id=sesion["clinica_id"],
+            titulo=titulo.strip(),
+            categoria=categoria,
+            contenido=contenido.strip(),
+        ))
+        await session.commit()
+
+    return RedirectResponse("/clinic/app/plantillas?creado=1", status_code=303)
+
+
+@router.post("/app/plantillas/{pid}/eliminar")
+async def eliminar_plantilla(pid: int, clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        pl = (await session.execute(
+            select(PlantillaRespuesta)
+            .where(PlantillaRespuesta.id == pid)
+            .where(PlantillaRespuesta.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if pl:
+            await session.delete(pl)
+            await session.commit()
+
+    return RedirectResponse("/clinic/app/plantillas", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# 9) CONFIGURACIÓN — Integraciones y branding
+# ════════════════════════════════════════════════════════════
 
 @router.get("/app/configuracion", response_class=HTMLResponse)
-async def vista_config(clinic_session: Optional[str] = Cookie(None)):
+async def vista_config(
+    guardado: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
     sesion = obtener_sesion(clinic_session)
     if not sesion:
         return RedirectResponse("/clinic/login", status_code=303)
     clinica = await obtener_clinica(sesion["clinica_id"])
-    return _vista_simple("Configuración",
-                          "Conecta WhatsApp, Instagram, Google Sheets y personaliza tu cuenta", "⚙️",
-                          "/clinic/app/", "Volver al dashboard", sesion, clinica, "config")
+
+    def esc(s): return html.escape(s or "", quote=True)
+    wa_conectado = bool(clinica.whatsapp_phone_id)
+    ig_conectado = bool(clinica.instagram_account_id)
+    sheets_conectado = bool(clinica.google_sheet_id)
+
+    banner = ""
+    if guardado:
+        banner = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Configuración guardada</div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Configuración - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("config", sesion, clinica)}
+    <main class="main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Configuración</h1>
+      <p style="color:var(--text-soft);margin-bottom:24px;">Conecta tus canales y personaliza tu cuenta</p>
+      {banner}
+
+      <form method="post" action="/clinic/app/configuracion" style="display:flex;flex-direction:column;gap:18px;max-width:780px;">
+
+        <!-- DATOS BASE -->
+        <div class="card">
+          <h2 style="font-size:16px;font-weight:700;margin-bottom:14px;">📋 Datos del consultorio</h2>
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Nombre</label>
+              <input type="text" name="nombre" value="{esc(clinica.nombre)}" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Ciudad</label>
+              <input type="text" name="ciudad" value="{esc(clinica.ciudad)}" class="input">
+            </div>
+          </div>
+          <div style="margin-top:12px;">
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Especialidad</label>
+            <input type="text" name="especialidad" value="{esc(clinica.especialidad)}" class="input">
+          </div>
+        </div>
+
+        <!-- WHATSAPP -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:16px;font-weight:700;">💬 WhatsApp Business Cloud API</h2>
+            <span class="badge {'badge-pro' if wa_conectado else 'badge-free'}">{'CONECTADO' if wa_conectado else 'NO CONECTADO'}</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;">
+            Conectá tu número de WhatsApp Business para recibir mensajes en el inbox. <br>
+            Necesitás <a href="https://developers.facebook.com" target="_blank">credenciales de Meta for Developers</a>.
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Phone Number ID</label>
+              <input type="text" name="whatsapp_phone_id" value="{esc(clinica.whatsapp_phone_id)}" placeholder="123456789012345" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Access Token</label>
+              <input type="password" name="whatsapp_token" value="{esc(clinica.whatsapp_token)}" placeholder="EAAm..." class="input">
+            </div>
+          </div>
+        </div>
+
+        <!-- INSTAGRAM -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:16px;font-weight:700;">📷 Instagram DMs</h2>
+            <span class="badge {'badge-pro' if ig_conectado else 'badge-free'}">{'CONECTADO' if ig_conectado else 'NO CONECTADO'}</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;">
+            Recibí mensajes directos de Instagram en el inbox unificado.
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Instagram Account ID</label>
+              <input type="text" name="instagram_account_id" value="{esc(clinica.instagram_account_id)}" class="input">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Access Token</label>
+              <input type="password" name="instagram_token" value="{esc(clinica.instagram_token)}" class="input">
+            </div>
+          </div>
+        </div>
+
+        <!-- GOOGLE SHEETS -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:16px;font-weight:700;">📊 Google Sheets — Sync de pacientes</h2>
+            <span class="badge {'badge-pro' if sheets_conectado else 'badge-free'}">{'CONECTADO' if sheets_conectado else 'NO CONECTADO'}</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;">
+            Sincronizá tus pacientes desde una hoja de Google Sheets. La hoja debe tener columnas:
+            <code>nombre, telefono, email, tratamiento, notas</code>.
+          </p>
+          <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Sheet ID o URL completa</label>
+          <input type="text" name="google_sheet_id" value="{esc(clinica.google_sheet_id)}" placeholder="https://docs.google.com/spreadsheets/d/..." class="input">
+        </div>
+
+        <!-- BRANDING (solo Pro y Studio) -->
+        <div class="card">
+          <h2 style="font-size:16px;font-weight:700;margin-bottom:6px;">🎨 Branding</h2>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;">
+            {('Plan Studio: tu logo + dominio propio.' if clinica.plan == 'studio' else
+              'Plan Pro: personalizá colores y logo. <a href="#">Upgrade</a> para dominio propio.' if clinica.plan == 'pro' else
+              'Plan Free: incluye marca Lapora. <a href="#">Upgrade a Pro</a> para personalizar.')}
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">URL del logo</label>
+              <input type="url" name="logo_url" value="{esc(clinica.logo_url)}" placeholder="https://..." class="input" {'disabled' if clinica.plan == 'free' else ''}>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Color primario</label>
+              <input type="color" name="color_primario" value="{esc(clinica.color_primario) or '#FF3B30'}" class="input" style="height:46px;" {'disabled' if clinica.plan == 'free' else ''}>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;">
+          <a href="/clinic/app/" class="btn btn-ghost">Cancelar</a>
+          <button type="submit" class="btn btn-primary">Guardar configuración</button>
+        </div>
+      </form>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/configuracion", response_class=HTMLResponse)
+async def guardar_config(
+    nombre: str = Form(""),
+    ciudad: str = Form(""),
+    especialidad: str = Form(""),
+    whatsapp_phone_id: str = Form(""),
+    whatsapp_token: str = Form(""),
+    instagram_account_id: str = Form(""),
+    instagram_token: str = Form(""),
+    google_sheet_id: str = Form(""),
+    logo_url: str = Form(""),
+    color_primario: str = Form("#FF3B30"),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        c = (await session.execute(
+            select(Clinica).where(Clinica.id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if c:
+            if nombre.strip(): c.nombre = nombre.strip()
+            c.ciudad = ciudad.strip()
+            c.especialidad = especialidad.strip()
+            # Solo guardar token nuevo si lo enviaron (no sobrescribir con vacío)
+            if whatsapp_phone_id.strip(): c.whatsapp_phone_id = whatsapp_phone_id.strip()
+            if whatsapp_token.strip(): c.whatsapp_token = whatsapp_token.strip()
+            if instagram_account_id.strip(): c.instagram_account_id = instagram_account_id.strip()
+            if instagram_token.strip(): c.instagram_token = instagram_token.strip()
+            c.google_sheet_id = google_sheet_id.strip()
+            if c.plan != "free":
+                c.logo_url = logo_url.strip()
+                c.color_primario = color_primario
+            c.actualizado_en = datetime.utcnow()
+            await session.commit()
+
+    return RedirectResponse("/clinic/app/configuracion?guardado=1", status_code=303)
+
+
+# Eliminar el helper _vista_simple que ya no se usa
+def _vista_simple(*args, **kwargs):
+    """Helper deprecated — ya no se usa, todos los endpoints son reales."""
+    pass
