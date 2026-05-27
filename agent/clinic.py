@@ -507,42 +507,297 @@ async def dashboard(
 # ════════════════════════════════════════════════════════════
 
 @router.get("/app/inbox", response_class=HTMLResponse)
-async def vista_inbox(clinic_session: Optional[str] = Cookie(None)):
+async def vista_inbox(
+    canal: Optional[str] = None,
+    paciente_id: Optional[int] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Inbox unificado: lista de conversaciones a la izquierda, chat seleccionado a la derecha."""
     sesion = obtener_sesion(clinic_session)
     if not sesion:
         return RedirectResponse("/clinic/login", status_code=303)
     clinica = await obtener_clinica(sesion["clinica_id"])
 
     async with async_session() as session:
-        mensajes = (await session.execute(
-            select(MensajeUnificado)
-            .where(MensajeUnificado.clinica_id == clinica.id)
-            .order_by(desc(MensajeUnificado.timestamp))
-            .limit(50)
-        )).scalars().all()
+        # Última conversación por paciente (group by paciente, order by último msg)
+        # Para simplicidad, traemos todos los mensajes recientes y agrupamos en memoria
+        query = select(MensajeUnificado).where(MensajeUnificado.clinica_id == clinica.id)
+        if canal and canal != "todos":
+            query = query.where(MensajeUnificado.canal == canal)
+        query = query.order_by(desc(MensajeUnificado.timestamp)).limit(500)
+        todos_mensajes = list((await session.execute(query)).scalars().all())
 
-    placeholder = """
-    <div style="text-align: center; padding: 60px 20px; color: var(--text-soft);">
-      <div style="font-size: 64px; margin-bottom: 16px;">📥</div>
-      <h3 style="font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 8px;">Inbox vacío</h3>
-      <p style="font-size: 14px; max-width: 400px; margin: 0 auto 24px;">
-        Cuando conectes WhatsApp e Instagram, los mensajes de tus pacientes aparecerán aquí en tiempo real.
-      </p>
-      <a href="/clinic/app/configuracion" class="btn btn-primary">Conectar canales →</a>
-    </div>""" if not mensajes else ""
+        # Agrupar por paciente: tomar el último mensaje de cada uno
+        conversaciones: dict[int, dict] = {}
+        for m in todos_mensajes:
+            pid = m.paciente_id or 0
+            if pid not in conversaciones:
+                conversaciones[pid] = {
+                    "paciente_id": pid,
+                    "ultimo_mensaje": m,
+                    "no_leidos": 0,
+                    "total": 0,
+                    "canales": set(),
+                }
+            conversaciones[pid]["total"] += 1
+            conversaciones[pid]["canales"].add(m.canal)
+            if not m.leido and m.direccion == "entrada":
+                conversaciones[pid]["no_leidos"] += 1
+
+        # Cargar nombres de pacientes
+        pids = [c["paciente_id"] for c in conversaciones.values() if c["paciente_id"]]
+        pacientes_map = {}
+        if pids:
+            for p in (await session.execute(
+                select(Paciente).where(Paciente.id.in_(pids))
+            )).scalars().all():
+                pacientes_map[p.id] = p
+
+        # Mensajes del chat seleccionado
+        mensajes_chat: list = []
+        paciente_actual = None
+        if paciente_id:
+            paciente_actual = pacientes_map.get(paciente_id)
+            if not paciente_actual:
+                paciente_actual = (await session.execute(
+                    select(Paciente).where(Paciente.id == paciente_id).where(Paciente.clinica_id == clinica.id)
+                )).scalar_one_or_none()
+            if paciente_actual:
+                mensajes_chat = list((await session.execute(
+                    select(MensajeUnificado)
+                    .where(MensajeUnificado.clinica_id == clinica.id)
+                    .where(MensajeUnificado.paciente_id == paciente_id)
+                    .order_by(MensajeUnificado.timestamp.asc())
+                )).scalars().all())
+                # Marcar como leídos los entrantes
+                for m in mensajes_chat:
+                    if not m.leido and m.direccion == "entrada":
+                        m.leido = True
+                await session.commit()
+
+        # Plantillas para insertar
+        plantillas = list((await session.execute(
+            select(PlantillaRespuesta).where(PlantillaRespuesta.clinica_id == clinica.id)
+            .order_by(desc(PlantillaRespuesta.usos)).limit(10)
+        )).scalars().all())
+
+    # === Conversaciones (sidebar izquierdo)
+    conv_html = ""
+    convs_ordenadas = sorted(
+        conversaciones.values(),
+        key=lambda c: c["ultimo_mensaje"].timestamp if c["ultimo_mensaje"] else datetime.min,
+        reverse=True,
+    )
+    canal_icon = {"whatsapp": "💬", "instagram": "📷", "email": "✉️", "sms": "💬", "llamada": "📞"}
+    for conv in convs_ordenadas:
+        p = pacientes_map.get(conv["paciente_id"])
+        if not p:
+            continue
+        ultimo = conv["ultimo_mensaje"]
+        nombre = html.escape(p.nombre or "Sin nombre")
+        preview = html.escape((ultimo.contenido or "")[:55])
+        ts = ultimo.timestamp.strftime("%H:%M") if ultimo.timestamp else ""
+        no_leidos = conv["no_leidos"]
+        canales_icons = "".join(canal_icon.get(c, "·") for c in conv["canales"])
+        activa = "background:var(--primary-light);border-left:3px solid var(--primary);" if paciente_id == p.id else ""
+        badge_unread = f'<span style="background:var(--primary);color:white;font-size:11px;padding:1px 7px;border-radius:999px;font-weight:700;">{no_leidos}</span>' if no_leidos else ""
+        conv_html += f"""
+        <a href="/clinic/app/inbox?paciente_id={p.id}{('&canal=' + canal) if canal and canal != 'todos' else ''}"
+           style="display:block;padding:12px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--text);{activa}">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-weight:600;font-size:14px;">{nombre}</div>
+            <div style="font-size:11px;color:var(--text-soft);">{ts}</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+            <div style="font-size:12px;color:var(--text-soft);">{canales_icons} {preview}...</div>
+            {badge_unread}
+          </div>
+        </a>"""
+
+    if not conv_html:
+        conv_html = """
+        <div style="text-align:center;padding:40px 20px;color:var(--text-soft);">
+          <div style="font-size:48px;">📭</div>
+          <p style="margin-top:10px;font-size:13px;">Sin conversaciones todavía</p>
+        </div>"""
+
+    # === Chat (panel derecho)
+    chat_html = ""
+    if paciente_actual:
+        bubbles = ""
+        for m in mensajes_chat:
+            es_salida = m.direccion == "salida"
+            align = "flex-end" if es_salida else "flex-start"
+            color = "var(--primary)" if es_salida else "white"
+            text_color = "white" if es_salida else "var(--text)"
+            ts = m.timestamp.strftime("%H:%M") if m.timestamp else ""
+            icon = canal_icon.get(m.canal, "·")
+            bubbles += f"""
+            <div style="display:flex;justify-content:{align};margin-bottom:10px;">
+              <div style="max-width:65%;background:{color};color:{text_color};padding:10px 14px;border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,0.06);">
+                <div style="font-size:14px;line-height:1.4;">{html.escape(m.contenido or "")}</div>
+                <div style="font-size:10px;opacity:0.7;margin-top:4px;text-align:right;">{icon} {ts}</div>
+              </div>
+            </div>"""
+        if not bubbles:
+            bubbles = '<div style="text-align:center;color:var(--text-soft);padding:40px;font-size:14px;">Sin mensajes con este paciente todavía</div>'
+
+        opciones_plantilla = "".join(
+            f'<option value="{html.escape(pl.contenido, quote=True)}">{html.escape(pl.titulo)}</option>'
+            for pl in plantillas
+        )
+        # Construir el select de plantillas fuera del f-string para evitar líos de escape
+        if plantillas:
+            select_plantilla_html = (
+                '<select onchange="var m=document.getElementById(\'msg\');m.value=this.value;this.value=\'\';" '
+                'class="input" style="margin-bottom:8px;font-size:13px;">'
+                '<option value="">Insertar plantilla...</option>'
+                f'{opciones_plantilla}</select>'
+            )
+        else:
+            select_plantilla_html = ""
+
+        # Header del chat
+        tel = html.escape(paciente_actual.telefono or "—")
+        chat_html = f"""
+        <div style="display:flex;flex-direction:column;height:100%;">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border);background:white;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-weight:700;font-size:15px;">{html.escape(paciente_actual.nombre)}</div>
+              <div style="font-size:12px;color:var(--text-soft);font-family:monospace;">{tel}</div>
+            </div>
+            <a href="/clinic/app/pacientes/{paciente_actual.id}" class="btn btn-ghost" style="padding:8px 14px;font-size:13px;">Ver ficha →</a>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:20px;background:#fafaf9;">
+            {bubbles}
+          </div>
+          <div style="border-top:1px solid var(--border);padding:14px 16px;background:white;">
+            <form method="post" action="/clinic/app/inbox/{paciente_actual.id}/responder" style="display:flex;gap:10px;align-items:flex-end;">
+              <div style="flex:1;">
+                {select_plantilla_html}
+                <textarea id="msg" name="contenido" required rows="2" class="input"
+                          style="resize:vertical;font-family:inherit;line-height:1.4;"
+                          placeholder="Escribe un mensaje a {html.escape(paciente_actual.nombre)}..."></textarea>
+              </div>
+              <button type="submit" class="btn btn-primary" style="background:#25D366;box-shadow:0 4px 12px rgba(37,211,102,0.3);">📲 Enviar</button>
+            </form>
+          </div>
+        </div>"""
+    else:
+        chat_html = """
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-soft);text-align:center;padding:40px;">
+          <div style="font-size:64px;margin-bottom:16px;">💬</div>
+          <h3 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px;">Selecciona una conversación</h3>
+          <p style="font-size:14px;max-width:320px;">O conecta WhatsApp e Instagram en Configuración para empezar a recibir mensajes.</p>
+        </div>"""
+
+    # Filtros de canal
+    canales_disponibles = [
+        ("todos", "Todos", "📥"),
+        ("whatsapp", "WhatsApp", "💬"),
+        ("instagram", "Instagram", "📷"),
+        ("email", "Email", "✉️"),
+    ]
+    filtros_html = ""
+    for c, lab, ic in canales_disponibles:
+        activo = (canal == c) or (not canal and c == "todos")
+        bg = "var(--primary)" if activo else "transparent"
+        col = "white" if activo else "var(--text)"
+        filtros_html += f'<a href="/clinic/app/inbox?canal={c}" style="background:{bg};color:{col};border:1.5px solid {("var(--primary)" if activo else "var(--border)")};padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;text-decoration:none;display:inline-block;margin-right:6px;">{ic} {lab}</a>'
 
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><title>Inbox - Lapora Clinic</title>{CSS_CLINIC}</head>
 <body>
   <div class="app-wrap">
     {sidebar_clinic("inbox", sesion, clinica)}
-    <main class="main">
-      <h1 style="font-size: 26px; font-weight: 800; margin-bottom: 4px;">Inbox unificado</h1>
-      <p style="color: var(--text-soft); margin-bottom: 24px;">Todos tus canales en un solo lugar</p>
-      <div class="card">{placeholder}</div>
+    <main class="main" style="padding:0;display:flex;flex-direction:column;height:100vh;">
+      <div style="padding:20px 28px;border-bottom:1px solid var(--border);background:white;">
+        <h1 style="font-size:22px;font-weight:800;margin-bottom:4px;">Inbox unificado</h1>
+        <div style="margin-top:10px;">{filtros_html}</div>
+      </div>
+      <div style="flex:1;display:grid;grid-template-columns:340px 1fr;min-height:0;background:white;">
+        <div style="border-right:1px solid var(--border);overflow-y:auto;">{conv_html}</div>
+        <div>{chat_html}</div>
+      </div>
     </main>
   </div>
 </body></html>""")
+
+
+@router.post("/app/inbox/{paciente_id}/responder", response_class=HTMLResponse)
+async def responder_inbox(
+    paciente_id: int,
+    contenido: str = Form(...),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Envia un mensaje desde el inbox al paciente vía el canal de su última conversación."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    contenido = contenido.strip()
+    if not contenido:
+        return RedirectResponse(f"/clinic/app/inbox?paciente_id={paciente_id}", status_code=303)
+
+    async with async_session() as session:
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        paciente = (await session.execute(
+            select(Paciente).where(Paciente.id == paciente_id).where(Paciente.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if not paciente or not clinica:
+            return RedirectResponse("/clinic/app/inbox", status_code=303)
+
+        # Determinar canal del último mensaje (para responder por donde vino)
+        ultimo = (await session.execute(
+            select(MensajeUnificado)
+            .where(MensajeUnificado.paciente_id == paciente_id)
+            .order_by(desc(MensajeUnificado.timestamp))
+            .limit(1)
+        )).scalar_one_or_none()
+        canal_resp = ultimo.canal if ultimo else "whatsapp"
+
+        # Enviar por Meta WhatsApp API si el canal es whatsapp y hay token de la clínica
+        if canal_resp == "whatsapp" and clinica.whatsapp_phone_id and clinica.whatsapp_token and paciente.telefono:
+            try:
+                import re as _re_mod
+                import httpx as _httpx_mod
+                tel = _re_mod.sub(r"\D", "", paciente.telefono)
+                if not tel.startswith("57") and len(tel) == 10:
+                    tel = f"57{tel}"
+                async with _httpx_mod.AsyncClient(timeout=20.0) as client:
+                    await client.post(
+                        f"https://graph.facebook.com/v21.0/{clinica.whatsapp_phone_id}/messages",
+                        headers={
+                            "Authorization": f"Bearer {clinica.whatsapp_token}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "messaging_product": "whatsapp",
+                            "to": tel,
+                            "type": "text",
+                            "text": {"body": contenido},
+                        },
+                    )
+            except Exception:
+                pass  # Si falla el envío externo, igual guardamos en BD
+
+        # Siempre guardar el mensaje en el inbox para el historial
+        session.add(MensajeUnificado(
+            clinica_id=sesion["clinica_id"],
+            paciente_id=paciente_id,
+            canal=canal_resp,
+            direccion="salida",
+            contenido=contenido,
+            leido=True,
+            respondido_por="usuario",
+        ))
+        paciente.ultimo_contacto = datetime.utcnow()
+        paciente.total_mensajes = (paciente.total_mensajes or 0) + 1
+        await session.commit()
+
+    return RedirectResponse(f"/clinic/app/inbox?paciente_id={paciente_id}", status_code=303)
 
 
 # ════════════════════════════════════════════════════════════
@@ -1457,6 +1712,9 @@ async def eliminar_plantilla(pid: int, clinic_session: Optional[str] = Cookie(No
 @router.get("/app/configuracion", response_class=HTMLResponse)
 async def vista_config(
     guardado: Optional[str] = None,
+    sync_creados: Optional[int] = None,
+    sync_actualizados: Optional[int] = None,
+    error: Optional[str] = None,
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -1470,7 +1728,11 @@ async def vista_config(
     sheets_conectado = bool(clinica.google_sheet_id)
 
     banner = ""
-    if guardado:
+    if error:
+        banner = f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;">⚠ {html.escape(error)}</div>'
+    elif sync_creados is not None or sync_actualizados is not None:
+        banner = f'<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Sincronización completa: <strong>{sync_creados or 0}</strong> nuevos pacientes · <strong>{sync_actualizados or 0}</strong> actualizados</div>'
+    elif guardado:
         banner = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;">✓ Configuración guardada</div>'
 
     return HTMLResponse(f"""<!DOCTYPE html>
@@ -1559,6 +1821,10 @@ async def vista_config(
           </p>
           <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Sheet ID o URL completa</label>
           <input type="text" name="google_sheet_id" value="{esc(clinica.google_sheet_id)}" placeholder="https://docs.google.com/spreadsheets/d/..." class="input">
+          <p style="font-size:12px;color:var(--text-soft);margin-top:8px;">
+            📌 La hoja debe estar configurada como <strong>"Cualquiera con el enlace puede ver"</strong>.
+          </p>
+          {('<button type="button" onclick="syncSheets()" style="background:#3B82F6;color:white;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:12px;">↻ Sincronizar ahora</button>' if clinica.google_sheet_id else '')}
         </div>
 
         <!-- BRANDING (solo Pro y Studio) -->
@@ -1586,6 +1852,15 @@ async def vista_config(
           <button type="submit" class="btn btn-primary">Guardar configuración</button>
         </div>
       </form>
+
+      <script>
+        function syncSheets() {{
+          if (!confirm('¿Sincronizar pacientes desde Google Sheets ahora?')) return;
+          fetch('/clinic/app/configuracion/sync-sheets', {{ method: 'POST', credentials: 'same-origin' }})
+            .then(() => window.location.reload())
+            .catch(e => alert('Error: ' + e));
+        }}
+      </script>
     </main>
   </div>
 </body></html>""")
@@ -1632,7 +1907,402 @@ async def guardar_config(
     return RedirectResponse("/clinic/app/configuracion?guardado=1", status_code=303)
 
 
-# Eliminar el helper _vista_simple que ya no se usa
-def _vista_simple(*args, **kwargs):
-    """Helper deprecated — ya no se usa, todos los endpoints son reales."""
-    pass
+# ════════════════════════════════════════════════════════════
+# 10) SYNC GOOGLE SHEETS — Import pacientes desde una hoja publica
+# ════════════════════════════════════════════════════════════
+
+@router.post("/app/configuracion/sync-sheets", response_class=HTMLResponse)
+async def sync_google_sheets(clinic_session: Optional[str] = Cookie(None)):
+    """Sincroniza pacientes desde la URL de Google Sheets configurada.
+
+    La hoja debe estar publicada como CSV (Archivo > Compartir > Publicar en web > CSV).
+    Columnas esperadas (case-insensitive): nombre, telefono, email, tratamiento, notas
+    """
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if not clinica or not clinica.google_sheet_id:
+            return RedirectResponse(
+                "/clinic/app/configuracion?error=Configura+primero+el+Sheet+ID",
+                status_code=303,
+            )
+
+        # Convertir URL/ID a URL de export CSV
+        import re as _re_sh
+        sheet_input = clinica.google_sheet_id.strip()
+        # Si es URL completa, extraer ID
+        m = _re_sh.search(r"/d/([a-zA-Z0-9_-]+)", sheet_input)
+        sheet_id = m.group(1) if m else sheet_input
+        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+
+        # Descargar
+        try:
+            import httpx as _httpx_sh
+            async with _httpx_sh.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                resp = await client.get(csv_url)
+            if resp.status_code != 200:
+                return RedirectResponse(
+                    f"/clinic/app/configuracion?error=No+se+pudo+descargar+(HTTP+{resp.status_code}).+Hace+publica+la+hoja",
+                    status_code=303,
+                )
+            contenido_csv = resp.text
+        except Exception as e:
+            return RedirectResponse(
+                f"/clinic/app/configuracion?error=Error+descargando:+{html.escape(str(e)[:60])}",
+                status_code=303,
+            )
+
+        # Parsear CSV y hacer upsert
+        import csv as _csv
+        from io import StringIO
+        reader = _csv.DictReader(StringIO(contenido_csv))
+        # Normalizar headers (lowercase, sin acentos)
+        if reader.fieldnames:
+            reader.fieldnames = [
+                (h or "").lower().strip()
+                .replace("é", "e").replace("ó", "o").replace("í", "i")
+                .replace("á", "a").replace("ú", "u").replace("ñ", "n")
+                for h in reader.fieldnames
+            ]
+
+        creados = actualizados = 0
+        ahora = datetime.utcnow()
+        for row in reader:
+            nombre = (row.get("nombre") or row.get("name") or "").strip()
+            if not nombre:
+                continue
+            telefono = (row.get("telefono") or row.get("teléfono") or row.get("phone") or "").strip()
+            email = (row.get("email") or row.get("correo") or "").strip().lower()
+            tratamiento = (row.get("tratamiento") or row.get("tratamiento_actual") or "").strip()
+            notas = (row.get("notas") or row.get("notes") or "").strip()
+
+            # Upsert por telefono o email
+            existing = None
+            if telefono:
+                existing = (await session.execute(
+                    select(Paciente)
+                    .where(Paciente.clinica_id == clinica.id)
+                    .where(Paciente.telefono == telefono)
+                )).scalar_one_or_none()
+            if not existing and email:
+                existing = (await session.execute(
+                    select(Paciente)
+                    .where(Paciente.clinica_id == clinica.id)
+                    .where(Paciente.email == email)
+                )).scalar_one_or_none()
+
+            if existing:
+                existing.nombre = nombre
+                if telefono: existing.telefono = telefono
+                if email: existing.email = email
+                if tratamiento: existing.tratamiento_actual = tratamiento
+                if notas: existing.notas_basicas = notas
+                existing.ultimo_contacto = ahora
+                actualizados += 1
+            else:
+                session.add(Paciente(
+                    clinica_id=clinica.id,
+                    nombre=nombre,
+                    telefono=telefono,
+                    email=email,
+                    tratamiento_actual=tratamiento,
+                    notas_basicas=notas,
+                    fuente="sheets",
+                    estado="nuevo",
+                    primer_contacto=ahora,
+                    ultimo_contacto=ahora,
+                ))
+                creados += 1
+
+        await session.commit()
+
+    return RedirectResponse(
+        f"/clinic/app/configuracion?guardado=1&sync_creados={creados}&sync_actualizados={actualizados}",
+        status_code=303,
+    )
+
+
+# ════════════════════════════════════════════════════════════
+# 11) WEBHOOK — Receptor de mensajes WhatsApp por clínica
+# ════════════════════════════════════════════════════════════
+
+@router.get("/webhook/whatsapp/{slug}")
+async def webhook_whatsapp_verify(slug: str, request: Request):
+    """Verificación inicial del webhook por Meta (hub.challenge)."""
+    params = dict(request.query_params)
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    async with async_session() as session:
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.slug == slug)
+        )).scalar_one_or_none()
+
+    # Verify token = el ID del WhatsApp Phone Number ID (simple y suficiente)
+    if mode == "subscribe" and clinica and token == clinica.whatsapp_phone_id:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(str(challenge or ""))
+    return HTMLResponse("Forbidden", status_code=403)
+
+
+@router.post("/webhook/whatsapp/{slug}")
+async def webhook_whatsapp_recibir(slug: str, request: Request):
+    """Recibe mensajes WhatsApp y los guarda en el inbox de la clínica."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "ignored"}
+
+    async with async_session() as session:
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.slug == slug)
+        )).scalar_one_or_none()
+        if not clinica:
+            return {"status": "clinica no encontrada"}
+
+        # Parsear estructura Meta Cloud API
+        for entry in payload.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                for msg in value.get("messages", []):
+                    if msg.get("type") != "text":
+                        continue
+                    from_tel = msg.get("from", "")
+                    texto = msg.get("text", {}).get("body", "")
+                    msg_id = msg.get("id", "")
+                    ts = datetime.utcnow()
+
+                    # Buscar o crear paciente por teléfono
+                    paciente = (await session.execute(
+                        select(Paciente)
+                        .where(Paciente.clinica_id == clinica.id)
+                        .where(Paciente.telefono.contains(from_tel[-10:]))
+                    )).scalar_one_or_none()
+                    if not paciente:
+                        paciente = Paciente(
+                            clinica_id=clinica.id,
+                            nombre=f"WhatsApp +{from_tel}",
+                            telefono=f"+{from_tel}",
+                            fuente="whatsapp",
+                            estado="nuevo",
+                            primer_contacto=ts,
+                            ultimo_contacto=ts,
+                        )
+                        session.add(paciente)
+                        await session.flush()
+
+                    # Guardar mensaje
+                    session.add(MensajeUnificado(
+                        clinica_id=clinica.id,
+                        paciente_id=paciente.id,
+                        canal="whatsapp",
+                        direccion="entrada",
+                        contenido=texto,
+                        canal_msg_id=msg_id,
+                        leido=False,
+                        timestamp=ts,
+                    ))
+                    paciente.ultimo_contacto = ts
+                    paciente.total_mensajes = (paciente.total_mensajes or 0) + 1
+
+        await session.commit()
+    return {"status": "ok"}
+
+
+# ════════════════════════════════════════════════════════════
+# 12) LANDING PUBLICO — Marketing de Lapora Clinic
+# ════════════════════════════════════════════════════════════
+
+@router.get("/landing", response_class=HTMLResponse)
+async def landing_publico():
+    """Página de marketing pública de Lapora Clinic con pricing."""
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Lapora Clinic — El software que tu consultorio necesita</title>
+<meta name="description" content="WhatsApp + Instagram + pacientes + IA en una sola pantalla. Desde gratis.">
+{CSS_CLINIC}
+<style>
+  .hero {{ background: linear-gradient(135deg, #FFF1F0 0%, #FFFFFF 100%); padding: 80px 24px; text-align: center; }}
+  .hero h1 {{ font-size: 56px; font-weight: 900; letter-spacing: -2px; line-height: 1.05; margin-bottom: 22px; }}
+  .hero h1 span {{ color: var(--primary); }}
+  .hero p {{ font-size: 19px; color: var(--text-soft); max-width: 640px; margin: 0 auto 32px; line-height: 1.5; }}
+  .features {{ padding: 80px 24px; max-width: 1100px; margin: 0 auto; }}
+  .features-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }}
+  .feature-card {{
+    background: white; padding: 28px; border-radius: 16px;
+    border: 1px solid var(--border); transition: all 0.2s;
+  }}
+  .feature-card:hover {{ transform: translateY(-4px); box-shadow: var(--shadow-lg); }}
+  .feature-icon {{ font-size: 36px; margin-bottom: 14px; }}
+  .pricing {{ padding: 60px 24px; background: var(--bg); }}
+  .pricing-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; max-width: 1000px; margin: 0 auto; }}
+  .price-card {{
+    background: white; padding: 32px; border-radius: 18px;
+    border: 1.5px solid var(--border); position: relative;
+  }}
+  .price-card.featured {{ border-color: var(--primary); border-width: 2px; transform: scale(1.03); }}
+  .price-tag {{ font-size: 36px; font-weight: 900; margin: 14px 0; }}
+  .price-tag small {{ font-size: 14px; color: var(--text-soft); font-weight: 600; }}
+  .price-feat-list {{ list-style: none; padding: 0; margin: 20px 0; }}
+  .price-feat-list li {{ padding: 6px 0; font-size: 14px; }}
+  .price-feat-list li:before {{ content: "✓ "; color: var(--green); font-weight: 700; }}
+  .nav-pub {{
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 18px 32px; border-bottom: 1px solid var(--border); background: white;
+  }}
+</style>
+</head>
+<body>
+  <nav class="nav-pub">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div class="brand-logo">L</div>
+      <div>
+        <div style="font-weight:800;font-size:16px;">Lapora Clinic</div>
+        <div style="font-size:11px;color:var(--text-soft);">Marketing digital para médicos</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;">
+      <a href="/clinic/login" style="font-weight:600;color:var(--text);font-size:14px;">Iniciar sesión</a>
+      <a href="/clinic/registro" class="btn btn-primary">Probar gratis</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <h1>El cerebro digital<br>de <span>tu consultorio</span></h1>
+    <p>WhatsApp, Instagram, pacientes, citas y reportes en una sola pantalla.
+       Sin perder tiempo cambiando entre apps. Empezás <strong>gratis</strong>, sin tarjeta.</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+      <a href="/clinic/registro" class="btn btn-primary" style="padding:14px 28px;font-size:15px;">Empezar gratis →</a>
+      <a href="#features" class="btn btn-ghost" style="padding:14px 28px;font-size:15px;">Ver cómo funciona</a>
+    </div>
+    <p style="font-size:12px;color:var(--text-soft);margin-top:18px;">
+      ✓ Sin tarjeta de crédito  ·  ✓ Setup en 5 minutos  ·  ✓ Cancelas cuando quieras
+    </p>
+  </section>
+
+  <section class="features" id="features">
+    <h2 style="text-align:center;font-size:36px;font-weight:900;margin-bottom:14px;letter-spacing:-1px;">
+      Todo lo que un consultorio necesita
+    </h2>
+    <p style="text-align:center;color:var(--text-soft);max-width:560px;margin:0 auto 48px;font-size:15px;">
+      Diseñado por médicos para médicos. Cada función nace de un dolor real de consultorios en Colombia.
+    </p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">📥</div>
+        <h3 style="font-size:17px;font-weight:800;margin-bottom:6px;">Inbox unificado</h3>
+        <p style="color:var(--text-soft);font-size:14px;line-height:1.5;">
+          WhatsApp + Instagram + Email en una sola pantalla. Responde todo desde un único lugar.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🤖</div>
+        <h3 style="font-size:17px;font-weight:800;margin-bottom:6px;">IA SofIA</h3>
+        <p style="color:var(--text-soft);font-size:14px;line-height:1.5;">
+          Responde sola, agenda citas, califica leads. Trabajas el 70% menos.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">👥</div>
+        <h3 style="font-size:17px;font-weight:800;margin-bottom:6px;">CRM de pacientes</h3>
+        <p style="color:var(--text-soft);font-size:14px;line-height:1.5;">
+          Historial completo, notas, tratamiento, llamadas. Todo en la ficha del paciente.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <h3 style="font-size:17px;font-weight:800;margin-bottom:6px;">Sync Google Sheets</h3>
+        <p style="color:var(--text-soft);font-size:14px;line-height:1.5;">
+          Importas tus pacientes desde Excel/Sheets con un click. Sin perder lo que ya tienes.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📝</div>
+        <h3 style="font-size:17px;font-weight:800;margin-bottom:6px;">Plantillas inteligentes</h3>
+        <p style="color:var(--text-soft);font-size:14px;line-height:1.5;">
+          Respuestas rápidas para preguntas frecuentes con variables personalizables.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📞</div>
+        <h3 style="font-size:17px;font-weight:800;margin-bottom:6px;">Bitácora de llamadas</h3>
+        <p style="color:var(--text-soft);font-size:14px;line-height:1.5;">
+          Registra cada llamada y nunca pierdas el seguimiento de un paciente.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pricing" id="pricing">
+    <h2 style="text-align:center;font-size:36px;font-weight:900;margin-bottom:14px;letter-spacing:-1px;">
+      Empezá gratis. Escala cuando quieras.
+    </h2>
+    <p style="text-align:center;color:var(--text-soft);max-width:540px;margin:0 auto 48px;font-size:15px;">
+      Sin contratos. Sin permanencia. Sin sorpresas.
+    </p>
+    <div class="pricing-grid">
+
+      <div class="price-card">
+        <span class="badge badge-free">FREE</span>
+        <div class="price-tag">$0<small>/mes</small></div>
+        <p style="color:var(--text-soft);font-size:13px;">Perfecto para empezar y probar.</p>
+        <ul class="price-feat-list">
+          <li>Hasta 100 pacientes</li>
+          <li>Inbox WhatsApp</li>
+          <li>1 usuario</li>
+          <li>Plantillas básicas</li>
+          <li>Soporte por email</li>
+        </ul>
+        <a href="/clinic/registro" class="btn btn-ghost" style="width:100%;justify-content:center;">Empezar gratis</a>
+      </div>
+
+      <div class="price-card featured">
+        <span class="badge badge-pro">PRO ⭐</span>
+        <div class="price-tag">$190.000<small>/mes</small></div>
+        <p style="color:var(--text-soft);font-size:13px;">Para consultorios que ya facturan.</p>
+        <ul class="price-feat-list">
+          <li>Pacientes ilimitados</li>
+          <li>WhatsApp + Instagram + Email</li>
+          <li>IA SofIA</li>
+          <li>Sync Google Sheets</li>
+          <li>5 usuarios</li>
+          <li>Tu logo en la plataforma</li>
+          <li>Soporte priority</li>
+        </ul>
+        <a href="/clinic/registro" class="btn btn-primary" style="width:100%;justify-content:center;">Probar 14 días gratis</a>
+      </div>
+
+      <div class="price-card">
+        <span class="badge badge-studio">STUDIO</span>
+        <div class="price-tag">$390.000<small>/mes</small></div>
+        <p style="color:var(--text-soft);font-size:13px;">Para clínicas con varios profesionales.</p>
+        <ul class="price-feat-list">
+          <li>Todo lo de Pro</li>
+          <li>Usuarios ilimitados</li>
+          <li>Dominio propio (tudr.com)</li>
+          <li>Analytics avanzado</li>
+          <li>API custom</li>
+          <li>Onboarding personalizado</li>
+          <li>Soporte 24/7</li>
+        </ul>
+        <a href="https://wa.me/573228783019?text=Quiero+info+del+plan+Studio" class="btn btn-ghost" style="width:100%;justify-content:center;">Hablar con ventas</a>
+      </div>
+
+    </div>
+  </section>
+
+  <footer style="padding:40px 24px;text-align:center;color:var(--text-soft);font-size:13px;border-top:1px solid var(--border);">
+    <p><strong>Lapora Clinic</strong> · El cerebro digital de tu consultorio</p>
+    <p style="margin-top:8px;">
+      <a href="https://lapora.studio" style="color:var(--text-soft);">lapora.studio</a> ·
+      <a href="https://wa.me/573228783019" style="color:var(--text-soft);">+57 322 878 3019</a> ·
+      <a href="mailto:laporamarketingdigital@gmail.com" style="color:var(--text-soft);">laporamarketingdigital@gmail.com</a>
+    </p>
+  </footer>
+</body></html>""")
