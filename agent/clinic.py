@@ -23,7 +23,7 @@ import html
 import secrets
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, Request, Form, HTTPException, Cookie
+from fastapi import APIRouter, Depends, Request, Form, HTTPException, Cookie, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, func, or_, desc
 
@@ -32,7 +32,10 @@ from agent.clinic_models import (
     Clinica, UsuarioClinic, Paciente, MensajeUnificado,
     Llamada, CitaClinic, PlantillaRespuesta,
     crear_clinica, autenticar_usuario, obtener_clinica,
+    cargar_demo_data,
 )
+from io import StringIO
+import csv as _csv_mod
 
 
 router = APIRouter(prefix="/clinic", tags=["clinic"])
@@ -202,7 +205,13 @@ def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
           <div class="brand-sub">{nombre}</div>
         </div>
       </div>
-      <nav style="margin-top: 18px; flex: 1;">{links}</nav>
+      <form action="/clinic/app/buscar" method="get" style="margin:14px 0 6px;">
+        <input type="text" name="q" placeholder="🔍 Buscar pacientes, mensajes..."
+               style="width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;outline:none;background:var(--bg);"
+               onfocus="this.style.borderColor='var(--primary)'"
+               onblur="this.style.borderColor='var(--border)'">
+      </form>
+      <nav style="margin-top: 8px; flex: 1;">{links}</nav>
       <div style="border-top: 1px solid var(--border); padding-top: 14px;">
         <div style="font-size: 12px; color: var(--text-soft); margin-bottom: 6px;">
           {html.escape(sesion.get('nombre', ''))}
@@ -416,6 +425,7 @@ async def logout(clinic_session: Optional[str] = Cookie(None)):
 @router.get("/app", response_class=HTMLResponse)
 async def dashboard(
     bienvenida: Optional[str] = None,
+    demo: Optional[int] = None,
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -426,7 +436,13 @@ async def dashboard(
     if not clinica:
         return RedirectResponse("/clinic/login", status_code=303)
 
-    # Stats reales
+    # Stats reales + vista "HOY"
+    from datetime import timedelta
+    hoy_inicio = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    hoy_fin = hoy_inicio + timedelta(days=1)
+    hace_7_dias = hoy_inicio - timedelta(days=7)
+    hace_1_dia = datetime.utcnow() - timedelta(days=1)
+
     async with async_session() as session:
         total_pacientes = (await session.execute(
             select(func.count(Paciente.id)).where(Paciente.clinica_id == clinica.id)
@@ -444,14 +460,76 @@ async def dashboard(
             select(func.count(CitaClinic.id)).where(CitaClinic.clinica_id == clinica.id)
         )).scalar() or 0
 
+        # === Tareas de HOY ===
+        # Pacientes nuevos esta semana
+        nuevos_semana = list((await session.execute(
+            select(Paciente).where(Paciente.clinica_id == clinica.id)
+            .where(Paciente.primer_contacto >= hace_7_dias)
+            .order_by(desc(Paciente.primer_contacto)).limit(10)
+        )).scalars().all())
+        # Citas de hoy
+        citas_hoy = list((await session.execute(
+            select(CitaClinic).where(CitaClinic.clinica_id == clinica.id)
+            .where(CitaClinic.fecha_hora >= hoy_inicio)
+            .where(CitaClinic.fecha_hora < hoy_fin)
+            .order_by(CitaClinic.fecha_hora)
+        )).scalars().all())
+        # Mensajes sin responder de hace > 1 día
+        mensajes_pendientes = list((await session.execute(
+            select(MensajeUnificado).where(MensajeUnificado.clinica_id == clinica.id)
+            .where(MensajeUnificado.direccion == "entrada")
+            .where(MensajeUnificado.leido == False)
+            .where(MensajeUnificado.timestamp < hace_1_dia)
+            .order_by(MensajeUnificado.timestamp).limit(5)
+        )).scalars().all())
+        # Llamadas marcadas como "volver_a_llamar"
+        volver_llamar = list((await session.execute(
+            select(Llamada).where(Llamada.clinica_id == clinica.id)
+            .where(Llamada.resultado == "volver_a_llamar")
+            .order_by(desc(Llamada.timestamp)).limit(5)
+        )).scalars().all())
+
     bienvenida_html = ""
-    if bienvenida:
+    if demo:
+        bienvenida_html = f'<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:14px 18px;border-radius:12px;margin-bottom:24px;">🎉 ¡Datos demo cargados! Tienes {demo} pacientes de ejemplo para explorar.</div>'
+    elif bienvenida:
         bienvenida_html = f"""
         <div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:14px 18px;border-radius:12px;margin-bottom:24px;">
           🎉 <strong>¡Bienvenido a Lapora Clinic, {html.escape(sesion.get('nombre',''))}!</strong>
-          Tu clínica <strong>{html.escape(clinica.nombre)}</strong> está lista. Empieza conectando WhatsApp en
-          <a href="/clinic/app/configuracion" style="font-weight: 700;">Configuración</a>.
+          Tu clínica <strong>{html.escape(clinica.nombre)}</strong> está lista.<br>
+          <a href="/clinic/app/configuracion" style="font-weight: 700;">Conectar WhatsApp →</a> ·
+          <a href="/clinic/app/pacientes/nuevo" style="font-weight: 700;">Crear paciente →</a> ·
+          <form method="post" action="/clinic/app/demo-data" style="display:inline;">
+            <button type="submit" style="background:none;border:none;color:#065F46;font-weight:700;cursor:pointer;text-decoration:underline;padding:0;font-family:inherit;font-size:14px;">Cargar datos demo →</button>
+          </form>
         </div>"""
+
+    # Render bloque "Hoy"
+    def render_lista(items, fn_render, vacio_msg):
+        if not items:
+            return f'<p style="color:var(--text-soft);font-size:13px;padding:14px;text-align:center;">{vacio_msg}</p>'
+        return "".join(fn_render(i) for i in items)
+
+    citas_html = render_lista(
+        citas_hoy,
+        lambda c: f'<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;"><strong>{c.fecha_hora.strftime("%H:%M")}</strong> · <a href="/clinic/app/pacientes/{c.paciente_id}">paciente</a> · {html.escape(c.motivo or "")}</div>',
+        "Sin citas hoy 🎉",
+    )
+    pendientes_html = render_lista(
+        mensajes_pendientes,
+        lambda m: f'<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;"><a href="/clinic/app/inbox?paciente_id={m.paciente_id}">{html.escape((m.contenido or "")[:60])}...</a></div>',
+        "Todo respondido ✓",
+    )
+    volver_html = render_lista(
+        volver_llamar,
+        lambda l: f'<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;"><a href="/clinic/app/pacientes/{l.paciente_id}">{html.escape((l.notas or "Pendiente")[:60])}</a></div>',
+        "Sin llamadas pendientes 📞",
+    )
+    nuevos_html = render_lista(
+        nuevos_semana,
+        lambda p: f'<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;"><a href="/clinic/app/pacientes/{p.id}">{html.escape(p.nombre)}</a> · {html.escape(p.tratamiento_actual or "")}</div>',
+        "Sin pacientes nuevos esta semana",
+    )
 
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><title>Dashboard - Lapora Clinic</title>{CSS_CLINIC}</head>
@@ -486,6 +564,35 @@ async def dashboard(
         </div>
       </div>
 
+      <!-- VISTA HOY -->
+      <h2 style="font-size:18px;font-weight:800;margin:8px 0 12px;">📅 Hoy y esta semana</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:28px;">
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#3B82F6;color:white;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+            📅 Citas hoy ({len(citas_hoy)})
+          </div>
+          {citas_html}
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#F59E0B;color:white;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+            ⚠️ Sin responder ({len(mensajes_pendientes)})
+          </div>
+          {pendientes_html}
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#A855F7;color:white;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+            📞 Volver a llamar ({len(volver_llamar)})
+          </div>
+          {volver_html}
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#10B981;color:white;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+            🆕 Nuevos esta semana ({len(nuevos_semana)})
+          </div>
+          {nuevos_html}
+        </div>
+      </div>
+
       <div class="card" style="padding: 28px;">
         <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 16px;">🚀 Empieza en 3 pasos</h2>
         <ol style="padding-left: 20px; line-height: 1.9; color: var(--text); font-size: 14px;">
@@ -496,6 +603,7 @@ async def dashboard(
           <li><strong>Creá plantillas de respuesta</strong> — respondé a preguntas frecuentes con un click.
             <a href="/clinic/app/plantillas" style="margin-left: 6px;">Crear →</a></li>
         </ol>
+        {('<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);"><form method="post" action="/clinic/app/demo-data"><button type="submit" class="btn btn-ghost">🎁 Cargar datos de ejemplo</button></form><p style="font-size:11px;color:var(--text-soft);margin-top:6px;">Crea 5 pacientes, 7 mensajes, 3 llamadas y 4 plantillas demo para explorar la plataforma.</p></div>' if total_pacientes == 0 else '')}
       </div>
     </main>
   </div>
@@ -891,11 +999,13 @@ async def vista_pacientes(
           <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Pacientes</h1>
           <p style="color:var(--text-soft);">{len(pacientes)} pacientes registrados</p>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <form method="get" action="/clinic/app/pacientes" style="display:flex;gap:8px;">
-            <input type="text" name="q" value="{q_val}" placeholder="Buscar..." class="input" style="width:240px;">
+            <input type="text" name="q" value="{q_val}" placeholder="Buscar..." class="input" style="width:220px;">
             <button type="submit" class="btn btn-ghost">Buscar</button>
           </form>
+          <a href="/clinic/app/pacientes/importar" class="btn btn-ghost" title="Importar CSV">↑ Importar</a>
+          <a href="/clinic/app/pacientes-export" class="btn btn-ghost" title="Exportar CSV">↓ Exportar</a>
           <a href="/clinic/app/pacientes/nuevo" class="btn btn-primary">+ Nuevo</a>
         </div>
       </div>
@@ -2306,3 +2416,318 @@ async def landing_publico():
     </p>
   </footer>
 </body></html>""")
+
+
+# ════════════════════════════════════════════════════════════
+# 13) DEMO DATA — Cargar pacientes/mensajes/plantillas de ejemplo
+# ════════════════════════════════════════════════════════════
+
+@router.post("/app/demo-data", response_class=HTMLResponse)
+async def cargar_demo(clinic_session: Optional[str] = Cookie(None)):
+    """Carga 5 pacientes, 7 mensajes, 3 llamadas y 4 plantillas de ejemplo."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    creados = await cargar_demo_data(sesion["clinica_id"])
+    return RedirectResponse(
+        f"/clinic/app/?demo={creados['pacientes']}",
+        status_code=303,
+    )
+
+
+# ════════════════════════════════════════════════════════════
+# 14) IMPORTAR / EXPORTAR CSV de pacientes
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/pacientes/importar", response_class=HTMLResponse)
+async def importar_pacientes_form(clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Importar pacientes</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes", sesion, clinica)}
+    <main class="main">
+      <a href="/clinic/app/pacientes" style="font-size:13px;color:var(--text-soft);">← Volver</a>
+      <h1 style="font-size:26px;font-weight:800;margin:8px 0 24px;">Importar pacientes desde CSV</h1>
+
+      <div class="card" style="max-width:680px;">
+        <p style="margin-bottom:16px;font-size:14px;color:var(--text-soft);">
+          Sube un archivo CSV con las columnas: <code>nombre, telefono, email, tratamiento, notas</code>.
+          La primera fila debe ser el encabezado.
+        </p>
+
+        <details style="margin-bottom:18px;background:#fafaf9;padding:14px;border-radius:10px;border:1px solid var(--border);">
+          <summary style="cursor:pointer;font-weight:600;font-size:13px;">📋 Ver ejemplo de CSV</summary>
+          <pre style="background:white;padding:12px;border-radius:8px;margin-top:10px;font-size:12px;overflow-x:auto;">nombre,telefono,email,tratamiento,notas
+María Pérez,+573001234567,maria@email.com,Ortodoncia,Control mensual
+Carlos López,+573109876543,carlos@email.com,Limpieza,Primera consulta</pre>
+        </details>
+
+        <form method="post" action="/clinic/app/pacientes/importar" enctype="multipart/form-data"
+              style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Archivo CSV</label>
+            <input type="file" name="archivo" accept=".csv,text/csv" required class="input">
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button type="submit" class="btn btn-primary">↑ Importar pacientes</button>
+            <a href="/clinic/app/pacientes" class="btn btn-ghost">Cancelar</a>
+          </div>
+        </form>
+
+        <p style="margin-top:18px;font-size:12px;color:var(--text-soft);">
+          💡 Tip: Si ya tienes Google Sheets, mejor usa la sincronización automática en
+          <a href="/clinic/app/configuracion">Configuración</a>.
+        </p>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/pacientes/importar", response_class=HTMLResponse)
+async def importar_pacientes_procesar(
+    archivo: UploadFile = File(...),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    contenido = (await archivo.read()).decode("utf-8", errors="replace")
+    reader = _csv_mod.DictReader(StringIO(contenido))
+    # Normalizar headers
+    if reader.fieldnames:
+        reader.fieldnames = [(h or "").lower().strip() for h in reader.fieldnames]
+
+    creados = actualizados = 0
+    async with async_session() as session:
+        ahora = datetime.utcnow()
+        for row in reader:
+            nombre = (row.get("nombre") or row.get("name") or "").strip()
+            if not nombre:
+                continue
+            telefono = (row.get("telefono") or row.get("teléfono") or "").strip()
+            email = (row.get("email") or "").strip().lower()
+
+            # Upsert por telefono o email
+            existing = None
+            if telefono:
+                existing = (await session.execute(
+                    select(Paciente).where(Paciente.clinica_id == sesion["clinica_id"])
+                    .where(Paciente.telefono == telefono)
+                )).scalar_one_or_none()
+            if not existing and email:
+                existing = (await session.execute(
+                    select(Paciente).where(Paciente.clinica_id == sesion["clinica_id"])
+                    .where(Paciente.email == email)
+                )).scalar_one_or_none()
+
+            datos = {
+                "nombre": nombre,
+                "telefono": telefono,
+                "email": email,
+                "tratamiento_actual": (row.get("tratamiento") or "").strip(),
+                "notas_basicas": (row.get("notas") or "").strip(),
+            }
+            if existing:
+                for k, v in datos.items():
+                    if v:
+                        setattr(existing, k, v)
+                existing.ultimo_contacto = ahora
+                actualizados += 1
+            else:
+                session.add(Paciente(
+                    clinica_id=sesion["clinica_id"],
+                    fuente="import_csv",
+                    estado="nuevo",
+                    primer_contacto=ahora,
+                    ultimo_contacto=ahora,
+                    **datos,
+                ))
+                creados += 1
+        await session.commit()
+
+    return RedirectResponse(
+        f"/clinic/app/pacientes?creado=1&import_creados={creados}&import_actualizados={actualizados}",
+        status_code=303,
+    )
+
+
+@router.get("/app/pacientes-export")
+async def exportar_pacientes(clinic_session: Optional[str] = Cookie(None)):
+    """Descarga un CSV con todos los pacientes de la clínica."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        pacientes = list((await session.execute(
+            select(Paciente).where(Paciente.clinica_id == sesion["clinica_id"])
+            .order_by(Paciente.nombre)
+        )).scalars().all())
+
+    output = StringIO()
+    writer = _csv_mod.writer(output)
+    writer.writerow(["nombre", "telefono", "email", "documento", "tratamiento",
+                     "estado", "alergias", "notas", "fuente",
+                     "primer_contacto", "ultimo_contacto"])
+    for p in pacientes:
+        writer.writerow([
+            p.nombre or "", p.telefono or "", p.email or "",
+            p.documento or "", p.tratamiento_actual or "",
+            p.estado or "", p.alergias or "",
+            p.notas_basicas or "", p.fuente or "",
+            p.primer_contacto.strftime("%Y-%m-%d") if p.primer_contacto else "",
+            p.ultimo_contacto.strftime("%Y-%m-%d") if p.ultimo_contacto else "",
+        ])
+
+    csv_content = output.getvalue()
+    from fastapi.responses import Response
+    nombre_archivo = f"pacientes_{datetime.now():%Y%m%d}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{nombre_archivo}"'},
+    )
+
+
+# ════════════════════════════════════════════════════════════
+# 15) BUSQUEDA GLOBAL — Pacientes, mensajes, llamadas
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/buscar", response_class=HTMLResponse)
+async def buscar_global(
+    q: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+
+    pacientes_res = []
+    mensajes_res = []
+    llamadas_res = []
+    if q and len(q.strip()) >= 2:
+        patron = f"%{q.strip()}%"
+        async with async_session() as session:
+            pacientes_res = list((await session.execute(
+                select(Paciente).where(Paciente.clinica_id == clinica.id).where(or_(
+                    Paciente.nombre.ilike(patron),
+                    Paciente.telefono.ilike(patron),
+                    Paciente.email.ilike(patron),
+                    Paciente.tratamiento_actual.ilike(patron),
+                    Paciente.notas_basicas.ilike(patron),
+                )).limit(20)
+            )).scalars().all())
+            mensajes_res = list((await session.execute(
+                select(MensajeUnificado).where(MensajeUnificado.clinica_id == clinica.id)
+                .where(MensajeUnificado.contenido.ilike(patron))
+                .order_by(desc(MensajeUnificado.timestamp)).limit(20)
+            )).scalars().all())
+            llamadas_res = list((await session.execute(
+                select(Llamada).where(Llamada.clinica_id == clinica.id)
+                .where(Llamada.notas.ilike(patron))
+                .order_by(desc(Llamada.timestamp)).limit(20)
+            )).scalars().all())
+
+    def render_pacientes():
+        if not pacientes_res:
+            return '<p style="color:var(--text-soft);font-size:13px;">Sin resultados en pacientes</p>'
+        rows = ""
+        for p in pacientes_res:
+            rows += f"""
+            <a href="/clinic/app/pacientes/{p.id}" style="display:block;padding:10px 14px;border-bottom:1px solid var(--border);color:var(--text);text-decoration:none;">
+              <div style="font-weight:600;">{html.escape(p.nombre or '')}</div>
+              <div style="font-size:12px;color:var(--text-soft);">{html.escape(p.telefono or '—')} · {html.escape(p.tratamiento_actual or 'Sin tratamiento')}</div>
+            </a>"""
+        return rows
+
+    def render_mensajes():
+        if not mensajes_res:
+            return '<p style="color:var(--text-soft);font-size:13px;">Sin resultados en mensajes</p>'
+        rows = ""
+        for m in mensajes_res:
+            ts = m.timestamp.strftime("%d/%m %H:%M") if m.timestamp else ""
+            rows += f"""
+            <a href="/clinic/app/inbox?paciente_id={m.paciente_id}" style="display:block;padding:10px 14px;border-bottom:1px solid var(--border);color:var(--text);text-decoration:none;">
+              <div style="font-size:13px;line-height:1.4;">{html.escape((m.contenido or '')[:150])}</div>
+              <div style="font-size:11px;color:var(--text-soft);margin-top:4px;">{html.escape(m.canal)} · {m.direccion} · {ts}</div>
+            </a>"""
+        return rows
+
+    def render_llamadas():
+        if not llamadas_res:
+            return '<p style="color:var(--text-soft);font-size:13px;">Sin resultados en llamadas</p>'
+        rows = ""
+        for l in llamadas_res:
+            ts = l.timestamp.strftime("%d/%m %H:%M") if l.timestamp else ""
+            rows += f"""
+            <a href="/clinic/app/pacientes/{l.paciente_id}" style="display:block;padding:10px 14px;border-bottom:1px solid var(--border);color:var(--text);text-decoration:none;">
+              <div style="font-size:13px;line-height:1.4;">{html.escape((l.notas or '')[:150])}</div>
+              <div style="font-size:11px;color:var(--text-soft);margin-top:4px;">{html.escape(l.direccion)} · {html.escape(l.resultado or '')} · {ts}</div>
+            </a>"""
+        return rows
+
+    q_val = html.escape(q or "", quote=True)
+    sin_resultados = q and not pacientes_res and not mensajes_res and not llamadas_res
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Buscar - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("buscar", sesion, clinica)}
+    <main class="main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:16px;">🔍 Búsqueda global</h1>
+      <form method="get" action="/clinic/app/buscar" style="margin-bottom:24px;">
+        <input type="text" name="q" value="{q_val}" autofocus
+               placeholder="Buscar en pacientes, mensajes y llamadas..."
+               class="input" style="font-size:16px;padding:14px 16px;">
+      </form>
+
+      {('<p style="text-align:center;color:var(--text-soft);padding:60px 20px;"><strong>Sin resultados para</strong> ' + html.escape(q or '') + '. Probá con otra palabra.</p>' if sin_resultados else '')}
+
+      {('' if not q else f'''
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;">
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#1c1917;color:white;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">
+            👥 Pacientes ({len(pacientes_res)})
+          </div>
+          {render_pacientes()}
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#1c1917;color:white;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">
+            💬 Mensajes ({len(mensajes_res)})
+          </div>
+          {render_mensajes()}
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:12px 14px;background:#1c1917;color:white;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">
+            📞 Llamadas ({len(llamadas_res)})
+          </div>
+          {render_llamadas()}
+        </div>
+      </div>''')}
+    </main>
+  </div>
+</body></html>""")
+
+
+# ════════════════════════════════════════════════════════════
+# 16) HEALTH CHECK para Railway
+# ════════════════════════════════════════════════════════════
+
+@router.get("/health")
+async def health_clinic():
+    """Health check del módulo Lapora Clinic."""
+    try:
+        async with async_session() as session:
+            await session.execute(select(func.count(Clinica.id)))
+        return {"status": "ok", "service": "lapora_clinic", "db": "ok"}
+    except Exception as e:
+        return {"status": "degraded", "service": "lapora_clinic", "error": str(e)[:100]}

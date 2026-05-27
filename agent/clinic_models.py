@@ -336,3 +336,100 @@ async def obtener_clinica(clinica_id: int) -> Clinica | None:
         return (await session.execute(
             select(Clinica).where(Clinica.id == clinica_id)
         )).scalar_one_or_none()
+
+
+# ════════════════════════════════════════════════════════════
+# SEED DE DEMO — Datos de ejemplo para nuevos usuarios
+# ════════════════════════════════════════════════════════════
+
+async def cargar_demo_data(clinica_id: int) -> dict:
+    """Carga pacientes, mensajes, llamadas y plantillas de ejemplo."""
+    from datetime import timedelta
+    ahora = datetime.utcnow()
+    creados = {"pacientes": 0, "mensajes": 0, "llamadas": 0, "plantillas": 0}
+
+    pacientes_demo = [
+        {"nombre": "María Camila Rojas", "telefono": "+573201234567", "email": "maria.rojas@email.com",
+         "estado": "activo", "tratamiento_actual": "Ortodoncia", "notas_basicas": "Tratamiento de 18 meses con brackets metálicos. Próximo control en 30 días."},
+        {"nombre": "Carlos Andrés Pérez", "telefono": "+573109876543", "email": "carlos.perez@email.com",
+         "estado": "nuevo", "tratamiento_actual": "Limpieza dental", "notas_basicas": "Primera consulta. Mencionó sensibilidad en muela superior derecha."},
+        {"nombre": "Laura Sofía Méndez", "telefono": "+573157654321", "email": "laura.mendez@email.com",
+         "estado": "activo", "tratamiento_actual": "Blanqueamiento", "notas_basicas": "Tercera sesión completada. Resultados muy buenos."},
+        {"nombre": "Jorge Luis Castro", "telefono": "+573002468135", "email": "jorge.castro@email.com",
+         "estado": "inactivo", "tratamiento_actual": "Periodoncia", "notas_basicas": "No volvió a control después de 6 meses. Llamar para reactivar."},
+        {"nombre": "Andrea Patricia Gómez", "telefono": "+573225556677", "email": "andrea.gomez@email.com",
+         "estado": "dado_de_alta", "tratamiento_actual": "Implante", "notas_basicas": "Implante exitoso. Control anual programado."},
+    ]
+
+    mensajes_demo = [
+        # (paciente_idx, dir, canal, contenido, hours_ago)
+        (0, "entrada", "whatsapp", "Hola doctor, ¿a qué hora puedo ir mañana?", 2),
+        (0, "salida",  "whatsapp", "Hola María, tenemos disponibilidad a las 3pm o 5pm. ¿Cuál te queda mejor?", 1),
+        (0, "entrada", "whatsapp", "A las 5pm está perfecto, gracias!", 0.5),
+        (1, "entrada", "whatsapp", "Buenos días, quería preguntar precios de limpieza", 8),
+        (1, "salida",  "whatsapp", "Buenos días Carlos. La limpieza profesional cuesta $150.000 e incluye fluorización.", 7),
+        (2, "entrada", "instagram", "Vi sus historias del blanqueamiento, me interesa. ¿Cómo funciona?", 24),
+        (3, "salida",  "whatsapp", "Hola Jorge, ¿cómo va todo? Hace tiempo no sabemos de ti. ¿Agendamos un control?", 72),
+    ]
+
+    llamadas_demo = [
+        # (paciente_idx, direccion, duracion_min, resultado, notas, days_ago)
+        (3, "salida",  5, "volver_a_llamar", "No contestó. Reintentar mañana.", 1),
+        (1, "entrada", 8, "agendado", "Pregunta precios. Agendó limpieza para el viernes.", 0),
+        (0, "salida",  3, "agendado", "Confirmé cita de mañana 5pm.", 0),
+    ]
+
+    plantillas_demo = [
+        ("Saludo inicial", "saludo", "¡Hola {nombre}! Soy del consultorio. ¿En qué puedo ayudarte hoy?"),
+        ("Confirmación de cita", "confirmacion", "Hola {nombre}, te confirmo tu cita de {tratamiento} para mañana. Te esperamos!"),
+        ("Recordatorio control", "seguimiento", "Hola {nombre}, ya pasó tu tiempo de control. ¿Agendamos esta semana?"),
+        ("Horarios de atención", "horarios", "Atendemos de lunes a viernes de 8am a 6pm, y sábados de 9am a 1pm."),
+    ]
+
+    async with async_session() as session:
+        pacientes_creados = []
+        for p_data in pacientes_demo:
+            p = Paciente(
+                clinica_id=clinica_id,
+                fuente="demo",
+                primer_contacto=ahora - timedelta(days=30),
+                ultimo_contacto=ahora,
+                total_mensajes=2,
+                **p_data,
+            )
+            session.add(p)
+            pacientes_creados.append(p)
+            creados["pacientes"] += 1
+        await session.flush()
+
+        from agent.clinic_models import MensajeUnificado, Llamada, PlantillaRespuesta
+        for idx, dir_, canal, contenido, hours_ago in mensajes_demo:
+            ts = ahora - timedelta(hours=hours_ago)
+            session.add(MensajeUnificado(
+                clinica_id=clinica_id,
+                paciente_id=pacientes_creados[idx].id,
+                canal=canal, direccion=dir_, contenido=contenido,
+                leido=(dir_ == "salida"),
+                timestamp=ts,
+            ))
+            creados["mensajes"] += 1
+
+        for idx, dir_, dur_min, resultado, notas, days_ago in llamadas_demo:
+            session.add(Llamada(
+                clinica_id=clinica_id,
+                paciente_id=pacientes_creados[idx].id,
+                direccion=dir_, duracion_seg=dur_min * 60,
+                resultado=resultado, notas=notas,
+                timestamp=ahora - timedelta(days=days_ago),
+            ))
+            creados["llamadas"] += 1
+
+        for titulo, cat, contenido in plantillas_demo:
+            session.add(PlantillaRespuesta(
+                clinica_id=clinica_id, titulo=titulo,
+                categoria=cat, contenido=contenido,
+            ))
+            creados["plantillas"] += 1
+
+        await session.commit()
+    return creados
