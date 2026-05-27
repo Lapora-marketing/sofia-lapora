@@ -42,6 +42,12 @@ PORT = int(os.getenv("PORT", 8000))
 async def lifespan(app: FastAPI):
     """Inicializa la base de datos y el scheduler al arrancar el servidor."""
     await inicializar_db()
+    # Aplicar migraciones de Lapora Clinic (columnas nuevas en tablas existentes)
+    try:
+        from agent.clinic_models import aplicar_migraciones
+        await aplicar_migraciones()
+    except Exception as e:
+        logger.warning(f"Migraciones fallaron (no crítico): {e}")
 
     # Iniciar el scheduler de recordatorios en background
     scheduler_task = asyncio.create_task(scheduler_loop())

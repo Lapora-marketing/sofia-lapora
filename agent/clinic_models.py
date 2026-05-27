@@ -345,6 +345,62 @@ async def obtener_clinica(clinica_id: int) -> Clinica | None:
         )).scalar_one_or_none()
 
 
+async def aplicar_migraciones():
+    """Aplica migraciones idempotentes a tablas existentes.
+
+    SQLAlchemy create_all() solo crea tablas nuevas pero NO agrega columnas
+    a tablas existentes. Esta función agrega columnas faltantes manualmente
+    con ALTER TABLE IF NOT EXISTS.
+
+    Se ejecuta al arrancar la app (después de inicializar_db).
+    """
+    from sqlalchemy import text
+    from agent.memory import engine
+    import os as _os
+
+    # Detectar si es Postgres (Railway) o SQLite (local)
+    db_url = _os.getenv("DATABASE_URL", "")
+    es_postgres = "postgres" in db_url.lower()
+
+    if es_postgres:
+        # Postgres soporta ADD COLUMN IF NOT EXISTS
+        migraciones = [
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS congelada BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS motivo_suspension VARCHAR(300) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS fecha_suspension TIMESTAMP",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS fecha_proximo_pago TIMESTAMP",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS monto_mensual_usd INTEGER DEFAULT 0",
+        ]
+    else:
+        # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
+        migraciones = []
+        async with engine.connect() as conn:
+            try:
+                result = await conn.execute(text("PRAGMA table_info(clinic_clinicas)"))
+                columnas_existentes = {row[1] for row in result.fetchall()}
+                if "congelada" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN congelada BOOLEAN DEFAULT 0")
+                if "motivo_suspension" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN motivo_suspension VARCHAR(300) DEFAULT ''")
+                if "fecha_suspension" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN fecha_suspension DATETIME")
+                if "fecha_proximo_pago" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN fecha_proximo_pago DATETIME")
+                if "monto_mensual_usd" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN monto_mensual_usd INTEGER DEFAULT 0")
+            except Exception:
+                pass  # Tabla no existe todavía, create_all la creará completa
+
+    if migraciones:
+        async with engine.begin() as conn:
+            for sql in migraciones:
+                try:
+                    await conn.execute(text(sql))
+                    print(f"[migración OK] {sql[:80]}")
+                except Exception as e:
+                    print(f"[migración skip] {sql[:80]} -> {str(e)[:80]}")
+
+
 # ════════════════════════════════════════════════════════════
 # SEED DE DEMO — Datos de ejemplo para nuevos usuarios
 # ════════════════════════════════════════════════════════════
