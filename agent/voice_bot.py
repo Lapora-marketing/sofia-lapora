@@ -20,7 +20,7 @@ Día 2+: integración real con Twilio + Deepgram + ElevenLabs.
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse, PlainTextResponse, HTMLResponse, RedirectResponse
@@ -290,6 +290,12 @@ async def voice_dashboard(
     pausado: Optional[str] = None,
     reanudado: Optional[str] = None,
     disparado: Optional[str] = None,
+    encolados: Optional[int] = None,
+    saltados_opt: Optional[int] = None,
+    saltados_dup: Optional[int] = None,
+    mock_on: Optional[str] = None,
+    mock_off: Optional[str] = None,
+    error: Optional[str] = None,
 ):
     """UI admin para gestionar el Voice Bot — visible en /voice/dashboard.
 
@@ -303,6 +309,7 @@ async def voice_dashboard(
     metrics = await metricas_voice()
     cfg = await obtener_config_voice()
     pausado_actual = bool(cfg.scheduler_pausado)
+    mock_actual = bool(cfg.mock_mode) or os.getenv("VOICE_MOCK_MODE", "").lower() in ("1", "true", "yes")
     async with async_session() as session:
         # Próximas en cola (15 max)
         cola_result = await session.execute(
@@ -409,6 +416,14 @@ async def voice_dashboard(
         banner = '<div style="background:#D1FAE5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">✓ Scheduler reanudado — volverá a llamar en la próxima ventana hábil.</div>'
     elif disparado == "1":
         banner = '<div style="background:#DBEAFE;border:1px solid #3B82F6;color:#1E40AF;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">📞 Llamada disparada — revisa el histórico en unos segundos.</div>'
+    elif encolados is not None:
+        banner = f'<div style="background:#D1FAE5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">✓ {encolados} prospectos encolados · {saltados_opt or 0} bloqueados por opt-out · {saltados_dup or 0} ya estaban en cola</div>'
+    elif mock_on == "1":
+        banner = '<div style="background:#EDE9FE;border:1px solid #8B5CF6;color:#5B21B6;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">🎭 Mock Mode ACTIVADO — las llamadas se simulan con Claude. NO se llama a Twilio real. WhatsApp follow-ups SÍ se envían de verdad.</div>'
+    elif mock_off == "1":
+        banner = '<div style="background:#F3F4F6;border:1px solid #6B7280;color:#374151;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">Mock Mode desactivado — vuelve a usar Twilio real (necesita credenciales).</div>'
+    elif error:
+        banner = f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">⚠ {esc(error)}</div>'
 
     # Botón pause / resume
     if pausado_actual:
@@ -462,10 +477,26 @@ tr:last-child td{{border-bottom:none}}
     <div>
         <h1>📞 SofIA Llama — Dashboard</h1>
         <p class="subtitle">Calling bot con Twilio + Claude + ElevenLabs · {esc(datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC"))}</p>
-        <div style="margin-top:8px;">Estado scheduler: {estado_visual}</div>
+        <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <span>Scheduler: {estado_visual}</span>
+            <span>{'<span style="background:#EDE9FE;color:#5B21B6;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">🎭 Mock Mode ON</span>' if mock_actual else '<span style="background:#F3F4F6;color:#6B7280;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Twilio Real</span>'}</span>
+        </div>
     </div>
     <div>{boton_estado}</div>
 </div>
+
+<!-- Barra de acciones secundarias -->
+<div style="background:white;border:1px solid #E5E7EB;border-radius:12px;padding:14px 18px;margin:18px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:12px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;margin-right:8px;">Acciones rápidas:</span>
+    <form method="post" action="/voice/dashboard/encolar-prospectos-default" style="display:inline;" onsubmit="return confirm('¿Encolar los 99 prospectos verificados de Ibagué? Se respetan opt-outs.');">
+        <button type="submit" style="background:#FF3B30;color:white;border:none;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">📥 Encolar 99 prospectos Ibagué</button>
+    </form>
+    <form method="post" action="/voice/scheduler/mock-toggle" style="display:inline;" onsubmit="return confirm('{'¿Desactivar Mock Mode? Volverás a Twilio real.' if mock_actual else '¿Activar Mock Mode? Las llamadas se simularán con Claude (sin Twilio). WhatsApp follow-ups SÍ se envían reales.'}');">
+        <button type="submit" style="background:{'#6B7280' if mock_actual else '#8B5CF6'};color:white;border:none;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">{'❌ Desactivar Mock Mode' if mock_actual else '🎭 Activar Mock Mode'}</button>
+    </form>
+    <a href="/voice/dashboard" style="font-size:12px;color:#6B7280;text-decoration:underline;margin-left:auto;">↻ Refrescar</a>
+</div>
+
 {banner}
 
 <div class="stats">
@@ -512,6 +543,85 @@ tr:last-child td{{border-bottom:none}}
 </div>
 
 </body></html>""")
+
+
+@router.post("/dashboard/encolar-prospectos-default")
+async def encolar_prospectos_default():
+    """Atajo desde el dashboard: encola los 99 prospectos verificados de Ibagué.
+
+    Usa el CSV default (prospectos_200_reales.csv) con flags estándar.
+    """
+    import csv as _csv
+
+    csv_path = os.getenv("CSV_PROSPECTOS_PATH", "D:/CLAUDE/LAPORA/outreach/prospectos_200_reales.csv")
+
+    encolados = 0
+    saltados_optout = 0
+    saltados_sin_tel = 0
+    saltados_duplicados = 0
+
+    if not os.path.exists(csv_path):
+        return RedirectResponse(
+            url=f"/voice/dashboard?error=CSV+no+encontrado",
+            status_code=303,
+        )
+
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        for row in _csv.DictReader(f):
+            if row.get("email_verificado", "").upper() != "SI":
+                continue
+            telefono = (row.get("telefono", "") or "").strip()
+            if not telefono or len(telefono.replace("+", "")) < 7:
+                saltados_sin_tel += 1
+                continue
+            direccion = (row.get("direccion", "") or "").lower()
+            if "ibague" not in direccion and "ibagué" not in direccion:
+                continue
+
+            prio_csv = (row.get("prioridad", "") or "").lower()
+            prioridad = 50
+            if prio_csv == "muy_alta":
+                prioridad = 90
+            elif prio_csv == "alta":
+                prioridad = 70
+            elif prio_csv == "media":
+                prioridad = 50
+            elif prio_csv == "baja":
+                prioridad = 30
+
+            entry = await encolar_prospecto(
+                target_type="prospect",
+                target_id=row.get("id", ""),
+                target_nombre=row.get("nombre_negocio", "") or row.get("nombre_doctor", ""),
+                telefono=telefono,
+                script_id="outreach_medicos",
+                prioridad=prioridad,
+                intentos_max=3,
+            )
+            if entry is None:
+                saltados_optout += 1
+            else:
+                if entry.creada_en < datetime.utcnow() - timedelta(seconds=10):
+                    saltados_duplicados += 1
+                else:
+                    encolados += 1
+
+    return RedirectResponse(
+        url=f"/voice/dashboard?encolados={encolados}&saltados_opt={saltados_optout}&saltados_dup={saltados_duplicados}",
+        status_code=303,
+    )
+
+
+@router.post("/scheduler/mock-toggle")
+async def post_mock_toggle():
+    """Activa/desactiva mock mode (sin Twilio, conversaciones simuladas)."""
+    from agent.voice_models import set_mock_mode, esta_en_mock_mode
+    estado_actual = await esta_en_mock_mode()
+    await set_mock_mode(not estado_actual)
+    return RedirectResponse(
+        url=f"/voice/dashboard?{'mock_on' if not estado_actual else 'mock_off'}=1",
+        status_code=303,
+    )
 
 
 @router.post("/encolar/prospectos")

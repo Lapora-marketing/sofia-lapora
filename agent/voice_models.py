@@ -185,6 +185,9 @@ class VoiceConfig(Base):
     pausado_por:       Mapped[str] = mapped_column(String(100), default="")
     pausado_en:        Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Mock mode — simula conversaciones sin Twilio
+    mock_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+
 
 async def obtener_config_voice() -> VoiceConfig:
     """Devuelve la fila singleton. La crea si no existe."""
@@ -204,6 +207,31 @@ async def esta_pausado() -> bool:
     """True si el scheduler está pausado globalmente."""
     cfg = await obtener_config_voice()
     return bool(cfg.scheduler_pausado)
+
+
+async def esta_en_mock_mode() -> bool:
+    """True si el sistema está en modo simulado (sin Twilio real)."""
+    # Permite override por env var para staging
+    import os as _os
+    if _os.getenv("VOICE_MOCK_MODE", "").lower() in ("1", "true", "yes"):
+        return True
+    cfg = await obtener_config_voice()
+    return bool(cfg.mock_mode)
+
+
+async def set_mock_mode(activo: bool) -> bool:
+    """Activa/desactiva modo mock."""
+    async with async_session() as session:
+        cfg = (await session.execute(
+            select(VoiceConfig).where(VoiceConfig.id == 1)
+        )).scalar_one_or_none()
+        if not cfg:
+            cfg = VoiceConfig(id=1)
+            session.add(cfg)
+            await session.flush()
+        cfg.mock_mode = bool(activo)
+        await session.commit()
+    return True
 
 
 async def pausar_scheduler(motivo: str = "", por: str = "admin") -> bool:

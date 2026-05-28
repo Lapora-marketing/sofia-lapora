@@ -263,17 +263,32 @@ async def disparar_llamada(entry: VoiceQueue, worker_id: str = "default") -> Opt
 
 
 async def _iniciar_twilio_call(call: VoiceCall) -> bool:
-    """Hace la request real a Twilio para iniciar la llamada.
+    """Inicia la llamada — real (Twilio) o simulada (mock mode).
 
-    Día 4: stub que solo verifica si las credenciales existen.
-    Día 2 (próximo): integración real con twilio-python.
+    Si VoiceConfig.mock_mode = True (o env VOICE_MOCK_MODE=1):
+    - Llama a voice_mock.iniciar_call_mock() que simula la conversación
+      completa con Claude actuando como prospecto
+    - El procesamiento es síncrono pero usa un task en background para
+      no bloquear al scheduler
+
+    Si NO está en mock mode:
+    - Día 4: stub que solo verifica si las credenciales existen
+    - Día 2 (próximo): integración real con twilio-python
     """
+    # ¿Estamos en modo mock?
+    from agent.voice_models import esta_en_mock_mode
+    if await esta_en_mock_mode():
+        from agent.voice_mock import iniciar_call_mock
+        # Disparar en background — no bloqueamos al scheduler
+        asyncio.create_task(_mock_call_background(call))
+        logger.info(f"[voice_workers] call={call.id} MOCK MODE — simulación en background")
+        return True
+
     sid = os.getenv("TWILIO_ACCOUNT_SID")
     token = os.getenv("TWILIO_AUTH_TOKEN")
     from_num = os.getenv("TWILIO_VOICE_NUMBER")
 
     if not (sid and token and from_num):
-        # Día 4: aún no tenemos credenciales → no se puede llamar
         return False
 
     # Día 2: aquí va el código real:
@@ -281,20 +296,36 @@ async def _iniciar_twilio_call(call: VoiceCall) -> bool:
     # client = Client(sid, token)
     # base_url = os.getenv("PUBLIC_BASE_URL", "https://sofia-lapora-production.up.railway.app")
     # twilio_call = client.calls.create(
-    #     to=call.telefono,
-    #     from_=from_num,
+    #     to=call.telefono, from_=from_num,
     #     url=f"{base_url}/voice/twilio/answer?call_id={call.id}",
     #     status_callback=f"{base_url}/voice/twilio/status",
     #     status_callback_event=['initiated','ringing','answered','completed'],
-    #     timeout=20,
-    #     machine_detection='Enable',
+    #     timeout=20, machine_detection='Enable',
     # )
     # call.twilio_call_sid = twilio_call.sid
-    # ... guardar SID en BD
 
-    # Por ahora, registrar que estamos listos pero esperando Día 2
     logger.info(f"[voice_workers] Twilio creds OK, faltan endpoints reales (Día 2)")
-    return False  # Mientras no esté Día 2, no consideramos exitoso
+    return False
+
+
+async def _mock_call_background(call: VoiceCall):
+    """Wrapper que ejecuta la simulación mock en background."""
+    try:
+        from agent.voice_mock import iniciar_call_mock
+        # Liberar el lock primero porque procesar_post_call necesita ver
+        # la entry actualizada. Marcar call como in_progress.
+        async with async_session() as session:
+            c = (await session.execute(
+                select(VoiceCall).where(VoiceCall.id == call.id)
+            )).scalar_one_or_none()
+            if c:
+                c.estado = "in_progress"
+                c.inicio = datetime.utcnow()
+                await session.commit()
+
+        await iniciar_call_mock(call)
+    except Exception as e:
+        logger.error(f"[voice_workers] mock background error call={call.id}: {e}", exc_info=True)
 
 
 # ════════════════════════════════════════════════════════════

@@ -582,6 +582,8 @@ async def aplicar_migraciones():
             # Voice Bot per-tenant (Sprint Voice Bot Día 5)
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS voz_confirmar_citas_activa BOOLEAN DEFAULT FALSE",
             "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS voz_confirmacion_encolada BOOLEAN DEFAULT FALSE",
+            # Voice Bot Mock Mode
+            "ALTER TABLE voice_config ADD COLUMN IF NOT EXISTS mock_mode BOOLEAN DEFAULT FALSE",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -632,6 +634,14 @@ async def aplicar_migraciones():
                 # Voice Bot Día 5: campo en clinic_clinicas
                 if "voz_confirmar_citas_activa" not in columnas_existentes:
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN voz_confirmar_citas_activa BOOLEAN DEFAULT 0")
+                # Voice Bot mock_mode en voice_config
+                try:
+                    result_vc = await conn.execute(text("PRAGMA table_info(voice_config)"))
+                    columnas_vc = {row[1] for row in result_vc.fetchall()}
+                    if columnas_vc and "mock_mode" not in columnas_vc:
+                        migraciones.append("ALTER TABLE voice_config ADD COLUMN mock_mode BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
             except Exception:
                 pass  # Tabla no existe todavía, create_all la creará completa
 
