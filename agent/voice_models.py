@@ -26,7 +26,8 @@ import secrets
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import (
-    String, Text, DateTime, Integer, Boolean, ForeignKey, Float, select, desc, func
+    String, Text, DateTime, Integer, Boolean, ForeignKey, Float, Index,
+    select, desc, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -106,6 +107,18 @@ class VoiceQueue(Base):
     Cuando un VoiceQueue.intentos_restantes llega a 0 → estado=agotado.
     """
     __tablename__ = "voice_queue"
+
+    # Index compuesto para acelerar proxima_llamada_en_cola()
+    # Filtros típicos: WHERE estado='queued' AND programada_para <= now
+    #                  ORDER BY prioridad DESC, programada_para ASC
+    __table_args__ = (
+        Index(
+            "ix_voicequeue_dispatch",
+            "estado",
+            "programada_para",
+            "prioridad",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 

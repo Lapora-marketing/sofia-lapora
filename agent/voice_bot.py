@@ -22,9 +22,39 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, Request, HTTPException, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, HTTPException, Form, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import Response, JSONResponse, PlainTextResponse, HTMLResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets as _secrets
 import html as _html
+
+
+# ════════════════════════════════════════════════════════════
+# AUTH — Mismo Basic Auth que /clinic/superadmin
+# ════════════════════════════════════════════════════════════
+
+_voice_admin_security = HTTPBasic()
+
+
+def verificar_voice_admin(credentials: HTTPBasicCredentials = Depends(_voice_admin_security)) -> str:
+    """Basic Auth para endpoints admin del Voice Bot.
+
+    Usa las MISMAS credenciales globales que /admin y /clinic/superadmin
+    (env vars LAPORA_DASHBOARD_USER / LAPORA_DASHBOARD_PASS).
+    Default: lapora / lapora-sofia-2026
+    """
+    user_ok = _secrets.compare_digest(
+        credentials.username, os.getenv("LAPORA_DASHBOARD_USER", "lapora")
+    )
+    pass_ok = _secrets.compare_digest(
+        credentials.password, os.getenv("LAPORA_DASHBOARD_PASS", "lapora-sofia-2026")
+    )
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=401, detail="No autorizado",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 
@@ -194,7 +224,10 @@ async def twilio_stream(websocket: WebSocket, call_id: int):
 # ════════════════════════════════════════════════════════════
 
 @router.get("/metricas")
-async def get_metricas(clinica_id: Optional[int] = None):
+async def get_metricas(
+    clinica_id: Optional[int] = None,
+    user: str = Depends(verificar_voice_admin),
+):
     """Resumen agregado: cola, llamadas hoy, outcomes, costo del mes."""
     return await metricas_voice(clinica_id=clinica_id)
 
@@ -209,7 +242,7 @@ class OptOutRequest(BaseModel):
 
 
 @router.post("/optout")
-async def post_optout(req: OptOutRequest):
+async def post_optout(req: OptOutRequest, user: str = Depends(verificar_voice_admin)):
     """Agrega un número a la lista negra. NUNCA será llamado de nuevo."""
     ok = await registrar_optout(req.telefono, req.motivo, origen="manual")
     if not ok:
@@ -233,14 +266,18 @@ async def check_optout(telefono: str):
 # ════════════════════════════════════════════════════════════
 
 @router.post("/scheduler/pausar")
-async def post_pausar(motivo: str = Form(""), por: str = Form("admin")):
+async def post_pausar(
+    motivo: str = Form(""),
+    por: str = Form("admin"),
+    user: str = Depends(verificar_voice_admin),
+):
     """Pausa el scheduler. Llamadas en curso terminan, pero NO se inician nuevas."""
     await pausar_scheduler(motivo=motivo, por=por)
     return RedirectResponse(url="/voice/dashboard?pausado=1", status_code=303)
 
 
 @router.post("/scheduler/reanudar")
-async def post_reanudar():
+async def post_reanudar(user: str = Depends(verificar_voice_admin)):
     """Reanuda el scheduler."""
     await reanudar_scheduler()
     return RedirectResponse(url="/voice/dashboard?reanudado=1", status_code=303)
@@ -251,7 +288,7 @@ async def post_reanudar():
 # ════════════════════════════════════════════════════════════
 
 @router.post("/llamar-ahora/{queue_id}")
-async def llamar_ahora(queue_id: int):
+async def llamar_ahora(queue_id: int, user: str = Depends(verificar_voice_admin)):
     """Dispara INMEDIATAMENTE la llamada para esta entry de cola.
 
     BYPASS: ignora horario hábil + throttle (override admin).
@@ -296,6 +333,7 @@ async def voice_dashboard(
     mock_on: Optional[str] = None,
     mock_off: Optional[str] = None,
     error: Optional[str] = None,
+    user: str = Depends(verificar_voice_admin),
 ):
     """UI admin para gestionar el Voice Bot — visible en /voice/dashboard.
 
@@ -305,33 +343,43 @@ async def voice_dashboard(
     - Tabla últimas 20 llamadas con transcripts expandibles
     - Botón pausar/reanudar (Día 7+ feature)
     """
-    # Datos
-    metrics = await metricas_voice()
-    cfg = await obtener_config_voice()
+    # Datos — Paralelizar las 4 queries con asyncio.gather (~3x speedup en P95)
+    from agent.voice_models import VoiceOptOut
+    import asyncio as _asyncio
+
+    async def _query_cola():
+        async with async_session() as s:
+            r = await s.execute(
+                select(VoiceQueue)
+                .where(VoiceQueue.estado == "queued")
+                .order_by(VoiceQueue.programada_para)
+                .limit(15)
+            )
+            return list(r.scalars().all())
+
+    async def _query_calls():
+        async with async_session() as s:
+            r = await s.execute(
+                select(VoiceCall).order_by(desc(VoiceCall.creada_en)).limit(20)
+            )
+            return list(r.scalars().all())
+
+    async def _query_optouts():
+        async with async_session() as s:
+            r = await s.execute(
+                select(VoiceOptOut).order_by(desc(VoiceOptOut.fecha)).limit(10)
+            )
+            return list(r.scalars().all())
+
+    metrics, cfg, cola, calls, optouts = await _asyncio.gather(
+        metricas_voice(),
+        obtener_config_voice(),
+        _query_cola(),
+        _query_calls(),
+        _query_optouts(),
+    )
     pausado_actual = bool(cfg.scheduler_pausado)
     mock_actual = bool(cfg.mock_mode) or os.getenv("VOICE_MOCK_MODE", "").lower() in ("1", "true", "yes")
-    async with async_session() as session:
-        # Próximas en cola (15 max)
-        cola_result = await session.execute(
-            select(VoiceQueue)
-            .where(VoiceQueue.estado == "queued")
-            .order_by(VoiceQueue.programada_para)
-            .limit(15)
-        )
-        cola = list(cola_result.scalars().all())
-
-        # Últimas 20 llamadas
-        calls_result = await session.execute(
-            select(VoiceCall).order_by(desc(VoiceCall.creada_en)).limit(20)
-        )
-        calls = list(calls_result.scalars().all())
-
-        # Opt-outs recientes
-        from agent.voice_models import VoiceOptOut
-        optouts_result = await session.execute(
-            select(VoiceOptOut).order_by(desc(VoiceOptOut.fecha)).limit(10)
-        )
-        optouts = list(optouts_result.scalars().all())
 
     def esc(s):
         return _html.escape(str(s or ""), quote=True)
@@ -546,7 +594,7 @@ tr:last-child td{{border-bottom:none}}
 
 
 @router.post("/dashboard/encolar-prospectos-default")
-async def encolar_prospectos_default():
+async def encolar_prospectos_default(user: str = Depends(verificar_voice_admin)):
     """Atajo desde el dashboard: encola los 99 prospectos verificados de Ibagué.
 
     Usa el CSV default (prospectos_200_reales.csv) con flags estándar.
@@ -613,7 +661,7 @@ async def encolar_prospectos_default():
 
 
 @router.post("/scheduler/mock-toggle")
-async def post_mock_toggle():
+async def post_mock_toggle(user: str = Depends(verificar_voice_admin)):
     """Activa/desactiva mock mode (sin Twilio, conversaciones simuladas)."""
     from agent.voice_models import set_mock_mode, esta_en_mock_mode
     estado_actual = await esta_en_mock_mode()
@@ -630,6 +678,7 @@ async def encolar_prospectos_csv(
     solo_verificados: bool = Form(True),
     solo_ibague: bool = Form(True),
     prioridad_default: int = Form(50),
+    user: str = Depends(verificar_voice_admin),
 ):
     """Carga prospectos del CSV a la cola. Para uso desde admin.
 

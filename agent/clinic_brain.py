@@ -343,58 +343,18 @@ async def enviar_whatsapp_clinica(
     """Envía mensaje WhatsApp usando las credenciales Meta de la clínica.
 
     Cada clínica tiene su propio whatsapp_phone_id y whatsapp_token configurados
-    en /clinic/app/configuracion.
+    en /clinic/app/configuracion. Refactor: delega a whatsapp_helper.
 
-    Returns:
-        {"exito": bool, "error": str, "message_id": str}
+    Returns: {"exito": bool, "error": str, "message_id": str}
     """
-    import httpx
-
-    if not clinica.whatsapp_phone_id or not clinica.whatsapp_token:
-        return {
-            "exito": False,
-            "error": "Credenciales WhatsApp no configuradas",
-            "message_id": "",
-        }
-
-    # Limpiar teléfono: solo dígitos, sin +
-    tel_limpio = "".join(c for c in (telefono or "") if c.isdigit())
-    if not tel_limpio:
-        return {"exito": False, "error": "Teléfono inválido", "message_id": ""}
-
-    url = f"https://graph.facebook.com/v21.0/{clinica.whatsapp_phone_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {clinica.whatsapp_token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": tel_limpio,
-        "type": "text",
-        "text": {"body": mensaje[:4000]},  # WhatsApp límite 4096
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http_client:
-            r = await http_client.post(url, json=payload, headers=headers)
-            if r.status_code == 200:
-                data = r.json()
-                msg_id = ""
-                try:
-                    msg_id = data.get("messages", [{}])[0].get("id", "")
-                except (IndexError, KeyError):
-                    pass
-                return {"exito": True, "error": "", "message_id": msg_id}
-            else:
-                logger.error(f"[WhatsApp clinica={clinica.id}] {r.status_code}: {r.text[:200]}")
-                return {
-                    "exito": False,
-                    "error": f"Meta API {r.status_code}: {r.text[:200]}",
-                    "message_id": "",
-                }
-    except Exception as e:
-        logger.error(f"[WhatsApp clinica={clinica.id}] Excepción: {e}")
-        return {"exito": False, "error": str(e)[:200], "message_id": ""}
+    from agent.whatsapp_helper import enviar_mensaje_meta
+    return await enviar_mensaje_meta(
+        phone_id=clinica.whatsapp_phone_id,
+        token=clinica.whatsapp_token,
+        telefono=telefono,
+        mensaje=mensaje,
+        contexto_log=f"clinica={clinica.id}",
+    )
 
 
 # ════════════════════════════════════════════════════════════

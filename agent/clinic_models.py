@@ -584,6 +584,8 @@ async def aplicar_migraciones():
             "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS voz_confirmacion_encolada BOOLEAN DEFAULT FALSE",
             # Voice Bot Mock Mode
             "ALTER TABLE voice_config ADD COLUMN IF NOT EXISTS mock_mode BOOLEAN DEFAULT FALSE",
+            # Voice Bot — index compuesto para acelerar dispatch (Optimización)
+            "CREATE INDEX IF NOT EXISTS ix_voicequeue_dispatch ON voice_queue (estado, programada_para, prioridad)",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -640,6 +642,14 @@ async def aplicar_migraciones():
                     columnas_vc = {row[1] for row in result_vc.fetchall()}
                     if columnas_vc and "mock_mode" not in columnas_vc:
                         migraciones.append("ALTER TABLE voice_config ADD COLUMN mock_mode BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
+                # Index dispatch en voice_queue (SQLite acepta CREATE INDEX IF NOT EXISTS desde 3.8)
+                try:
+                    migraciones.append(
+                        "CREATE INDEX IF NOT EXISTS ix_voicequeue_dispatch "
+                        "ON voice_queue (estado, programada_para, prioridad)"
+                    )
                 except Exception:
                     pass
             except Exception:

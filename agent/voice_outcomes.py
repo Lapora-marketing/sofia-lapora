@@ -67,58 +67,41 @@ def _get_client() -> AsyncAnthropic:
 # ════════════════════════════════════════════════════════════
 
 async def enviar_whatsapp_lapora(telefono: str, mensaje: str) -> dict:
-    """Envía WhatsApp usando credenciales Meta de Lapora (no per-tenant).
-
-    Usado para:
-    - Follow-up a prospectos del CSV (outreach)
-    - Notificación a Michael cuando hay un lead caliente
-    """
-    if not (LAPORA_PHONE_ID and LAPORA_ACCESS_TOKEN):
-        return {"exito": False, "error": "Meta creds no configuradas en .env"}
-
-    tel_limpio = "".join(c for c in (telefono or "") if c.isdigit())
-    if not tel_limpio:
-        return {"exito": False, "error": "Teléfono inválido"}
-
-    url = f"https://graph.facebook.com/v21.0/{LAPORA_PHONE_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {LAPORA_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": tel_limpio,
-        "type": "text",
-        "text": {"body": mensaje[:4000]},
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(url, json=payload, headers=headers)
-            if r.status_code == 200:
-                return {"exito": True, "error": ""}
-            else:
-                logger.error(f"[voice_outcomes] WA Lapora {r.status_code}: {r.text[:200]}")
-                return {"exito": False, "error": f"{r.status_code}: {r.text[:200]}"}
-    except Exception as e:
-        return {"exito": False, "error": str(e)[:200]}
+    """Atajo: envía con credenciales globales de Lapora business."""
+    from agent.whatsapp_helper import enviar_mensaje_lapora
+    return await enviar_mensaje_lapora(telefono, mensaje, contexto_log="voice-outcomes")
 
 
 async def enviar_whatsapp_target(call: VoiceCall, mensaje: str) -> dict:
-    """Envía WhatsApp al target de la llamada usando las credenciales correctas:
-    - Si call.clinica_id está set → usa credenciales de la clínica
-    - Si no → usa Lapora business
+    """Envía WhatsApp al target usando credenciales correctas (per-tenant o Lapora).
+
+    - call.clinica_id set → credenciales de esa clínica
+    - call.clinica_id None → Lapora business global
     """
+    from agent.whatsapp_helper import enviar_mensaje_meta, credenciales_lapora
+
     if call.clinica_id:
-        from agent.clinic_brain import enviar_whatsapp_clinica
         async with async_session() as session:
             c = (await session.execute(
                 select(Clinica).where(Clinica.id == call.clinica_id)
             )).scalar_one_or_none()
         if not c:
             return {"exito": False, "error": "Clinica no encontrada"}
-        return await enviar_whatsapp_clinica(c, call.telefono, mensaje)
-    return await enviar_whatsapp_lapora(call.telefono, mensaje)
+        return await enviar_mensaje_meta(
+            phone_id=c.whatsapp_phone_id,
+            token=c.whatsapp_token,
+            telefono=call.telefono,
+            mensaje=mensaje,
+            contexto_log=f"clinica={c.id}",
+        )
+
+    # Lapora outreach
+    phone_id, token = credenciales_lapora()
+    return await enviar_mensaje_meta(
+        phone_id=phone_id, token=token,
+        telefono=call.telefono, mensaje=mensaje,
+        contexto_log=f"outreach call={call.id}",
+    )
 
 
 # ════════════════════════════════════════════════════════════

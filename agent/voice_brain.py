@@ -62,9 +62,10 @@ def cargar_config() -> dict:
 
 
 def recargar_config():
-    """Fuerza recarga del YAML. Útil tras editar el script en producción."""
+    """Fuerza recarga del YAML + invalida cache de prompts."""
     global _config_cache
     _config_cache = None
+    _invalidar_cache_prompts()
     return cargar_config()
 
 
@@ -97,25 +98,162 @@ def inyectar_variables(texto: str, variables: dict) -> str:
 
 
 # ════════════════════════════════════════════════════════════
-# SYSTEM PROMPT BUILDER
+# SYSTEM PROMPT BUILDER — Optimizado con caching + few-shot
 # ════════════════════════════════════════════════════════════
 
-def construir_system_prompt(script_id: str, variables: dict) -> str:
-    """Convierte el script YAML + variables del target en system prompt para Claude.
+# Cache en memoria: script_id → texto base (sin variables del target)
+# Esto evita reconstruir el prompt enorme cada turno (8K chars × 8 turnos × 220 llamadas/mes = ahorro real)
+_base_prompt_cache: dict[str, str] = {}
 
-    El prompt le da a Claude:
-    - Su identidad (SofIA)
-    - El contexto del negocio
-    - Los objetivos de esta llamada
-    - Las reglas de comportamiento
-    - Las objeciones esperadas con respuestas modelo
-    - Los cierres posibles
-    - Formato de respuesta esperado (JSON con respuesta + flags)
+
+def _invalidar_cache_prompts():
+    """Llamar tras recargar voice_scripts.yaml para refrescar el cache."""
+    _base_prompt_cache.clear()
+
+
+# Few-shot examples — Claude aprende del estilo deseado mejor con ejemplos que con reglas
+FEW_SHOT_EJEMPLOS = """
+# EJEMPLOS DE BUENAS RESPUESTAS (estudia el TONO y BREVEDAD)
+
+Ejemplo 1 — Apertura cálida:
+✓ "Buenos días doctor Rodríguez, le habla SofIA de Lapora. Solo le quito 30 segundos, ¿tiene un momento?"
+✗ "Hola buenas tardes mi nombre es SofIA soy la asistente virtual de Lapora Marketing Digital y estoy llamando porque..."
+(la mala es muy larga y suena robótica)
+
+Ejemplo 2 — Doctor ocupado:
+Doctor: "Estoy entre pacientes ahora"
+✓ Bot: "Por supuesto doctor. ¿Le mando la info por WhatsApp ahora mismo y la revisa cuando pueda?"
+✗ Bot: "Entiendo, pero solo serían dos minutos para explicarle..."
+(la mala empuja cuando debería ceder)
+
+Ejemplo 3 — Doctor pregunta "¿de qué se trata?":
+✓ Bot: "Es un software que automatiza el WhatsApp de su consultorio con IA. ¿Le interesa que le mande detalles?"
+✗ Bot: "Es Lapora Clinic, nuestra plataforma multicanal que integra WhatsApp Business, Instagram y email con inteligencia artificial..."
+(la mala es jerga marketinera)
+
+Ejemplo 4 — Doctor parece desconfiado:
+Doctor: "¿Cómo consiguieron mi número?"
+✓ Bot: "Lo encontramos en su sitio público, doctor. Si prefiere no recibir llamadas, lo quito ya de la lista."
+✗ Bot: "Su número está en nuestra base de datos verificada..."
+(la mala suena evasivo)
+
+Ejemplo 5 — Detecta buzón de voz:
+Persona: "Hola, no puedo atender, deja tu mensaje después del tono..."
+✓ Bot: "Hola doctor, soy SofIA de Lapora. Lo llamamos en otro momento. Buen día."
+   → end_call=true, outcome="voicemail"
+✗ Bot: continúa con la apertura normal como si fuera persona
+"""
+
+
+def _construir_base_prompt(script_id: str) -> str:
+    """Construye la parte ESTÁTICA del system prompt (sin variables del target).
+
+    Cacheable: solo cambia si edits voice_scripts.yaml + llamas _invalidar_cache_prompts().
     """
+    if script_id in _base_prompt_cache:
+        return _base_prompt_cache[script_id]
+
     config = cargar_config()
     script = obtener_script(script_id)
     global_cfg = config.get("config_global", {})
 
+    contexto = script.get("contexto_negocio", "").strip()
+    objetivos = "\n".join(f"- {o}" for o in script.get("objetivos_del_call", []))
+    reglas = "\n".join(f"- {r}" for r in script.get("reglas_comportamiento", []))
+
+    # Objeciones (sin inyectar variables todavía — usaremos placeholders)
+    objeciones_txt = ""
+    for o in script.get("objeciones", []):
+        patrones = ", ".join(f'"{p}"' for p in o.get("patron", []))
+        respuesta = o.get("respuesta_modelo", "").strip()
+        accion = o.get("siguiente_accion", "")
+        objeciones_txt += f"\nSi la persona dice algo como: {patrones}\n"
+        objeciones_txt += f"  Tono de respuesta: \"{respuesta}\"\n"
+        objeciones_txt += f"  Acción interna: {accion}\n"
+
+    cierres_txt = ""
+    for nombre, c in (script.get("cierres") or {}).items():
+        despedida = c.get("despedida", "").strip()
+        accion = c.get("accion", "")
+        cierres_txt += f"\n  - Cierre '{nombre}' (acción: {accion}):\n    \"{despedida}\"\n"
+
+    optout_frases = "\n".join(f'  - "{f}"' for f in global_cfg.get("opt_out_frases", []))
+
+    base = f"""Eres SofIA, asistente virtual por TELÉFONO de Lapora Marketing Digital (Ibagué, Tolima, Colombia).
+
+# CONTEXTO CRÍTICO
+
+Esta es una llamada HABLADA. NO un chat. Reglas inviolables:
+1. BREVEDAD: máx 15 palabras por turno (~3 segundos de audio). NUNCA listas largas.
+2. NATURALIDAD: español colombiano, "doctor/doctora", tono cálido y profesional.
+3. NUNCA EMPUJES: si la persona dice "ocupado" o "no me interesa", respeta de inmediato.
+4. NO inventes precios. Solo: Pro $100 USD/mes, Studio $250 USD/mes.
+5. NO repitas tu saludo si ya saludaste — sigue la conversación.
+6. NO te disculpes 3 veces. Profesionalismo, no sumisión.
+
+{FEW_SHOT_EJEMPLOS}
+
+# CONTEXTO DEL NEGOCIO
+{contexto}
+
+# OBJETIVOS DE ESTA LLAMADA
+{objetivos}
+
+# REGLAS DE COMPORTAMIENTO (cumplir SIEMPRE)
+{reglas}
+
+# OBJECIONES TÍPICAS Y CÓMO RESPONDER
+Usa estas respuestas como GUÍA del tono, NO las copies textual. Adáptalas naturalmente.
+{objeciones_txt}
+
+# OPT-OUT (terminar llamada PERMANENTE)
+Si la persona dice algo similar a:
+{optout_frases}
+→ activa optout=true, end_call=true, outcome="opt_out"
+
+# CIERRES POSIBLES
+{cierres_txt}
+
+# DETECCIÓN DE BUZÓN DE VOZ
+Si en el PRIMER turno escuchas: "deja tu mensaje", "después del tono", "buzón", "no se encuentra disponible"
+→ NO continúes la apertura. Di un mensaje breve de 5-10 segundos y activa end_call=true outcome="voicemail".
+
+# FORMATO DE RESPUESTA — OBLIGATORIO
+
+Responde SIEMPRE con un objeto JSON puro (sin prefijo de texto, sin ```fences```):
+
+{{
+  "respuesta": "Texto a hablar — MÁX 15 palabras",
+  "end_call": false,
+  "outcome": "",
+  "send_whatsapp_summary": false,
+  "transfer_to_human": false,
+  "optout": false,
+  "internal_note": "razonamiento corto (no se habla)"
+}}
+
+Validez del JSON:
+- `respuesta`: el texto natural a decir. Si es despedida, ya incluye "que tenga buen día" o similar.
+- `end_call`: true cuando termina la conversación (cierre, opt-out, voicemail, off-topic).
+- `outcome`: si end_call=true → "interested" | "not_interested" | "callback" | "voicemail" | "no_answer" | "opt_out" | "failed".
+- `send_whatsapp_summary`: true si seguirá un WhatsApp con info (interested/callback típicamente).
+- `transfer_to_human`: true cuando piden hablar con humano o necesitan ayuda especializada.
+- `optout`: true cuando piden explícitamente NO ser llamados de nuevo.
+- `internal_note`: 1 frase corta con tu razonamiento, útil para auditoría.
+
+# REGLA FINAL
+Si dudas, prefiere terminar amablemente y mandar info por WhatsApp antes que insistir.
+"""
+    _base_prompt_cache[script_id] = base
+    return base
+
+
+def construir_system_prompt(script_id: str, variables: dict) -> str:
+    """System prompt completo = base cacheado + sección variables del target.
+
+    Optimizado: el 95% del prompt (~10K chars) viene de cache.
+    Solo la sección VARIABLES + APERTURA cambia entre llamadas.
+    """
     # Variables canónicas con defaults
     vars_safe = {
         "nombre_doctor":    variables.get("nombre_doctor", "doctor"),
@@ -130,106 +268,32 @@ def construir_system_prompt(script_id: str, variables: dict) -> str:
         "motivo":           variables.get("motivo", ""),
     }
 
+    base = _construir_base_prompt(script_id)
+
+    # Sección dinámica: apertura inyectada + identificación del target
+    script = obtener_script(script_id)
     apertura = inyectar_variables(script.get("apertura", ""), vars_safe).strip()
-    contexto = inyectar_variables(script.get("contexto_negocio", ""), vars_safe).strip()
-    objetivos = "\n".join(f"- {o}" for o in script.get("objetivos_del_call", []))
-    reglas = "\n".join(f"- {r}" for r in script.get("reglas_comportamiento", []))
 
-    # Objeciones formateadas
-    objeciones_txt = ""
-    for o in script.get("objeciones", []):
-        patrones = ", ".join(f'"{p}"' for p in o.get("patron", []))
-        respuesta = inyectar_variables(o.get("respuesta_modelo", ""), vars_safe).strip()
-        accion = o.get("siguiente_accion", "")
-        objeciones_txt += f"\nSi el doctor dice algo como: {patrones}\n"
-        objeciones_txt += f"  Responde modelo: \"{respuesta}\"\n"
-        objeciones_txt += f"  Acción interna: {accion}\n"
+    # Resumen del target en una línea — Claude consume esto rápido
+    target_summary_partes = []
+    if vars_safe["nombre_doctor"] and vars_safe["nombre_doctor"] != "doctor":
+        target_summary_partes.append(f"nombre={vars_safe['nombre_doctor']}")
+    if vars_safe["especialidad"]:
+        target_summary_partes.append(f"especialidad={vars_safe['especialidad']}")
+    if vars_safe["nombre_negocio"] and vars_safe["nombre_negocio"] != "su consultorio":
+        target_summary_partes.append(f"consultorio={vars_safe['nombre_negocio']}")
+    if vars_safe["ciudad"]:
+        target_summary_partes.append(f"ciudad={vars_safe['ciudad']}")
+    target_summary = " | ".join(target_summary_partes) or "(sin datos del target)"
 
-    # Cierres
-    cierres_txt = ""
-    for nombre, c in (script.get("cierres") or {}).items():
-        despedida = inyectar_variables(c.get("despedida", ""), vars_safe).strip()
-        accion = c.get("accion", "")
-        cierres_txt += f"\n  - Cierre '{nombre}' (acción: {accion}):\n    \"{despedida}\"\n"
+    seccion_dinamica = f"""
+# DATOS DEL TARGET DE ESTA LLAMADA
+{target_summary}
 
-    # Opt-out frases
-    optout_frases = "\n".join(f'  - "{f}"' for f in global_cfg.get("opt_out_frases", []))
-
-    # System prompt completo
-    prompt = f"""Eres SofIA, asistente virtual de Lapora Marketing Digital, hablando por TELÉFONO con un médico/paciente.
-
-# CONTEXTO CRÍTICO DE LA LLAMADA
-
-Esta es una conversación HABLADA por teléfono. NO un chat de texto.
-- Habla en frases CORTAS (máx 3-4 segundos de audio = ~15 palabras)
-- Usa pausas naturales con coma y punto
-- NUNCA hables más de 4 segundos seguidos sin dejar pausar a la persona
-- Hablas español colombiano, tono cálido y profesional, NO vendedor agresivo
-
-# TU IDENTIDAD
-Eres SofIA, una asistente virtual de Lapora Marketing Digital con sede en Ibagué, Tolima.
-
-# APERTURA (úsala SOLO en el primer turno)
+# APERTURA EXACTA (usar SOLO en el primer turno, adaptable levemente)
 "{apertura}"
-
-# CONTEXTO DEL NEGOCIO
-{contexto}
-
-# OBJETIVOS DE ESTA LLAMADA
-{objetivos}
-
-# REGLAS DE COMPORTAMIENTO (cumplir SIEMPRE)
-{reglas}
-
-# OBJECIONES ESPERADAS Y CÓMO RESPONDER
-Usa estas respuestas modelo como guía, NO las copies textual. Adáptalas al flujo natural.
-{objeciones_txt}
-
-# FRASES QUE DISPARAN OPT-OUT INMEDIATO (terminar llamada)
-Si la persona dice cualquiera de estas frases (o algo similar), activa flag opt_out=true:
-{optout_frases}
-
-# CIERRES POSIBLES (cuando detectes que es momento de terminar)
-{cierres_txt}
-
-# DETECCIÓN DE BUZÓN DE VOZ
-Si en el primer turno escuchas frases como "deja tu mensaje", "después del tono", "buzón de voz",
-"no se encuentra disponible", es BUZÓN DE VOZ — NO una persona.
-Acción: di un mensaje BREVE de 10 segundos máximo y activa flag end_call=true con outcome="voicemail".
-
-# FORMATO DE RESPUESTA — CRÍTICO
-
-DEBES responder SIEMPRE en este formato JSON exacto:
-
-```json
-{{
-  "respuesta": "Lo que vas a decir en voz alta. CORTO (máx 15 palabras).",
-  "end_call": false,
-  "outcome": "",
-  "send_whatsapp_summary": false,
-  "transfer_to_human": false,
-  "optout": false,
-  "internal_note": "Tu razonamiento interno (no se habla, solo para logs)"
-}}
-```
-
-Reglas del JSON:
-- `respuesta`: lo que SofIA dice. Máx 15 palabras = ~3-4 segundos de audio. Si vas a despedirte, incluí la despedida aquí.
-- `end_call`: true SOLO cuando la conversación debe terminar (cierre acordado, opt-out, voicemail, off-topic prolongado)
-- `outcome`: si end_call=true, uno de: "interested", "not_interested", "callback", "voicemail", "no_answer", "opt_out", "failed"
-- `send_whatsapp_summary`: true si vamos a mandar info por WhatsApp tras colgar (caso típico: el doctor pidió info)
-- `transfer_to_human`: true si la persona pide explícitamente hablar con humano y debemos pasar el caso
-- `optout`: true si la persona pidió NO ser llamada de nuevo (lista negra permanente)
-- `internal_note`: explicación corta de tu razonamiento (para que el equipo pueda auditar después)
-
-# IMPORTANTE
-- En el PRIMER turno, usa la APERTURA exacta (puede ser adaptada levemente)
-- En turnos siguientes, conversa naturalmente respetando las reglas
-- Si la persona te pregunta algo que no sabes responder, di "le paso esa pregunta al equipo, lo llaman hoy" y `transfer_to_human=true`
-- Nunca inventes precios diferentes a $100 USD/mes Pro o $250 USD/mes Studio
-- Nunca prometas cosas que el sistema no puede hacer
 """
-    return prompt
+    return base + seccion_dinamica
 
 
 # ════════════════════════════════════════════════════════════
@@ -292,7 +356,20 @@ async def generar_turno(
     temperatura = config.get("config_global", {}).get("llm", {}).get("temperatura", 0.4)
     modelo = config.get("config_global", {}).get("llm", {}).get("modelo", "claude-sonnet-4-6")
 
-    system_prompt = construir_system_prompt(script_id, variables)
+    # System prompt en 2 bloques para aprovechar Anthropic prompt caching:
+    # Bloque 1 (cacheable): base + few-shot — idéntico para todos los targets del mismo script
+    # Bloque 2 (no cacheable): variables del target específico
+    base_prompt = _construir_base_prompt(script_id)
+    seccion_dinamica = construir_system_prompt(script_id, variables)[len(base_prompt):]
+
+    system_blocks = [
+        {
+            "type": "text",
+            "text": base_prompt,
+            "cache_control": {"type": "ephemeral"},  # Caching nativo Anthropic (5 min TTL)
+        },
+        {"type": "text", "text": seccion_dinamica},
+    ]
 
     # Construir mensajes
     mensajes = list(historial)
@@ -313,7 +390,7 @@ async def generar_turno(
             model=modelo,
             max_tokens=max_tokens,
             temperature=temperatura,
-            system=system_prompt,
+            system=system_blocks,
             messages=mensajes,
         )
 
