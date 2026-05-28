@@ -315,7 +315,7 @@ WIDGET_JS = r"""// Lapora Bot Widget — Self-contained
   // === Estilos inyectados ===
   var css = `
     .lpbot-bubble {
-      position: fixed; bottom: 22px; right: 22px; z-index: 999999;
+      position: fixed; bottom: 100px; right: 22px; z-index: 999999;
       width: 60px; height: 60px; border-radius: 50%;
       background: linear-gradient(135deg, #FF3B30, #E8302A);
       color: white; cursor: pointer; border: none;
@@ -337,9 +337,9 @@ WIDGET_JS = r"""// Lapora Bot Widget — Self-contained
       50% { transform: scale(1.15); opacity: 0.8; }
     }
     .lpbot-panel {
-      position: fixed; bottom: 96px; right: 22px; z-index: 999998;
+      position: fixed; bottom: 174px; right: 22px; z-index: 999998;
       width: 380px; max-width: calc(100vw - 32px);
-      height: 560px; max-height: calc(100vh - 130px);
+      height: 560px; max-height: calc(100vh - 200px);
       background: white; border-radius: 18px;
       box-shadow: 0 20px 50px rgba(0,0,0,0.25), 0 4px 16px rgba(0,0,0,0.08);
       display: none; flex-direction: column; overflow: hidden;
@@ -455,9 +455,9 @@ WIDGET_JS = r"""// Lapora Bot Widget — Self-contained
     @media (max-width: 480px) {
       .lpbot-panel {
         right: 8px; left: 8px; width: auto; max-width: none;
-        bottom: 84px; height: calc(100vh - 100px);
+        bottom: 156px; height: calc(100vh - 180px);
       }
-      .lpbot-bubble { right: 14px; bottom: 14px; }
+      .lpbot-bubble { right: 14px; bottom: 86px; }
     }
   `;
   var styleEl = document.createElement('style');
