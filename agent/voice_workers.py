@@ -35,7 +35,7 @@ from sqlalchemy import select, desc, func
 from agent.memory import async_session
 from agent.voice_models import (
     VoiceQueue, VoiceCall, VoiceOptOut,
-    proxima_llamada_en_cola, telefono_en_optout,
+    proxima_llamada_en_cola, telefono_en_optout, esta_pausado,
 )
 
 logger = logging.getLogger("agentkit")
@@ -153,6 +153,10 @@ async def puede_disparar_ahora() -> tuple[bool, str]:
 
     Returns: (puede, motivo_si_no)
     """
+    # Pausa global: respeta el flag de admin
+    if await esta_pausado():
+        return False, "scheduler pausado por admin"
+
     ahora = hora_actual_co()
     if not esta_en_horario_habil(ahora):
         return False, f"fuera de horario habil ({ahora.strftime('%a %H:%M')} CO)"

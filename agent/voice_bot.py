@@ -23,7 +23,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, JSONResponse, PlainTextResponse, HTMLResponse
+from fastapi.responses import Response, JSONResponse, PlainTextResponse, HTMLResponse, RedirectResponse
 import html as _html
 from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
@@ -32,6 +32,7 @@ from agent.memory import async_session
 from agent.voice_models import (
     VoiceCall, VoiceQueue, VoiceTranscript, VoiceOptOut,
     telefono_en_optout, registrar_optout, encolar_prospecto, metricas_voice,
+    obtener_config_voice, esta_pausado, pausar_scheduler, reanudar_scheduler,
 )
 
 logger = logging.getLogger("agentkit")
@@ -227,8 +228,69 @@ async def check_optout(telefono: str):
 # ENCOLAR PROSPECTOS DESDE CSV (admin only)
 # ════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════
+# PAUSE / RESUME — Control manual del scheduler
+# ════════════════════════════════════════════════════════════
+
+@router.post("/scheduler/pausar")
+async def post_pausar(motivo: str = Form(""), por: str = Form("admin")):
+    """Pausa el scheduler. Llamadas en curso terminan, pero NO se inician nuevas."""
+    await pausar_scheduler(motivo=motivo, por=por)
+    return RedirectResponse(url="/voice/dashboard?pausado=1", status_code=303)
+
+
+@router.post("/scheduler/reanudar")
+async def post_reanudar():
+    """Reanuda el scheduler."""
+    await reanudar_scheduler()
+    return RedirectResponse(url="/voice/dashboard?reanudado=1", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# LLAMAR AHORA — Override manual para una entry específica
+# ════════════════════════════════════════════════════════════
+
+@router.post("/llamar-ahora/{queue_id}")
+async def llamar_ahora(queue_id: int):
+    """Dispara INMEDIATAMENTE la llamada para esta entry de cola.
+
+    BYPASS: ignora horario hábil + throttle (override admin).
+    NO bypassa opt-out (eso es legal, no se puede saltar).
+    """
+    async with async_session() as session:
+        entry = (await session.execute(
+            select(VoiceQueue).where(VoiceQueue.id == queue_id)
+        )).scalar_one_or_none()
+        if not entry:
+            raise HTTPException(status_code=404, detail="Entry no encontrada")
+        if entry.estado != "queued":
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Entry no está en cola (estado={entry.estado})"},
+            )
+
+    # Opt-out check (no se puede bypass)
+    if await telefono_en_optout(entry.telefono):
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Teléfono en opt-out — no se puede llamar"},
+        )
+
+    # Disparar
+    from agent.voice_workers import disparar_llamada
+    call = await disparar_llamada(entry, worker_id="manual_admin")
+    if call is None:
+        return JSONResponse(status_code=500, content={"error": "No se pudo disparar la llamada"})
+
+    return RedirectResponse(url="/voice/dashboard?disparado=1", status_code=303)
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
-async def voice_dashboard():
+async def voice_dashboard(
+    pausado: Optional[str] = None,
+    reanudado: Optional[str] = None,
+    disparado: Optional[str] = None,
+):
     """UI admin para gestionar el Voice Bot — visible en /voice/dashboard.
 
     Muestra:
@@ -239,6 +301,8 @@ async def voice_dashboard():
     """
     # Datos
     metrics = await metricas_voice()
+    cfg = await obtener_config_voice()
+    pausado_actual = bool(cfg.scheduler_pausado)
     async with async_session() as session:
         # Próximas en cola (15 max)
         cola_result = await session.execute(
@@ -279,7 +343,7 @@ async def voice_dashboard():
     # Filas cola
     filas_cola = ""
     if not cola:
-        filas_cola = '<tr><td colspan="5" style="text-align:center;padding:24px;color:#9CA3AF;">Cola vacía — no hay llamadas programadas</td></tr>'
+        filas_cola = '<tr><td colspan="6" style="text-align:center;padding:24px;color:#9CA3AF;">Cola vacía — no hay llamadas programadas</td></tr>'
     for q in cola:
         prog = q.programada_para.strftime("%d/%m %H:%M") if q.programada_para else "-"
         tipo_color = "#3B82F6" if q.target_type == "prospect" else "#10B981"
@@ -290,6 +354,9 @@ async def voice_dashboard():
             <td><span style="background:{tipo_color}22;color:{tipo_color};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;text-transform:uppercase;">{esc(q.target_type)}</span></td>
             <td style="font-size:12px;color:#6B7280;">{prog}</td>
             <td style="font-weight:700;color:#FF3B30;">{q.prioridad}</td>
+            <td><form method="post" action="/voice/llamar-ahora/{q.id}" style="margin:0;" onsubmit="return confirm('¿Llamar AHORA a {esc(q.target_nombre[:30])} ({esc(q.telefono)})? Salta horario y throttle.');">
+                <button type="submit" style="background:#10B981;color:white;border:none;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">📞 Llamar ya</button>
+            </form></td>
         </tr>"""
 
     # Filas históricas
@@ -334,6 +401,32 @@ async def voice_dashboard():
             <td style="font-size:12px;color:#6B7280;">{fecha}</td>
         </tr>"""
 
+    # Banner de feedback de acciones
+    banner = ""
+    if pausado == "1":
+        banner = '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">⏸ Scheduler pausado — no se iniciarán llamadas nuevas hasta que reanudes.</div>'
+    elif reanudado == "1":
+        banner = '<div style="background:#D1FAE5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">✓ Scheduler reanudado — volverá a llamar en la próxima ventana hábil.</div>'
+    elif disparado == "1":
+        banner = '<div style="background:#DBEAFE;border:1px solid #3B82F6;color:#1E40AF;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">📞 Llamada disparada — revisa el histórico en unos segundos.</div>'
+
+    # Botón pause / resume
+    if pausado_actual:
+        boton_estado = f'''
+        <form method="post" action="/voice/scheduler/reanudar" style="display:inline;">
+            <button type="submit" style="background:#10B981;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">▶ Reanudar scheduler</button>
+        </form>'''
+        estado_visual = f'<span style="background:#FEF3C7;color:#92400E;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">⏸ Pausado</span>'
+        if cfg.motivo_pausa:
+            estado_visual += f' <span style="font-size:12px;color:#6B7280;margin-left:8px;">({esc(cfg.motivo_pausa[:60])})</span>'
+    else:
+        boton_estado = '''
+        <form method="post" action="/voice/scheduler/pausar" style="display:inline;" onsubmit="return confirm('¿Pausar scheduler? Las llamadas en curso terminan, pero no se iniciarán nuevas.');">
+            <input type="hidden" name="motivo" value="Pausa manual desde dashboard">
+            <button type="submit" style="background:#F59E0B;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">⏸ Pausar scheduler</button>
+        </form>'''
+        estado_visual = '<span style="background:#D1FAE5;color:#065F46;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">● Activo</span>'
+
     return HTMLResponse(f"""<!DOCTYPE html><html lang="es"><head>
 <meta charset="UTF-8"><title>SofIA Llama — Dashboard</title>
 <style>
@@ -365,8 +458,15 @@ tr:last-child td{{border-bottom:none}}
 </style></head><body>
 
 <a href="/admin/conversaciones" class="nav-back">← Volver al CRM</a>
-<h1>📞 SofIA Llama — Dashboard</h1>
-<p class="subtitle">Calling bot con Twilio + Claude + ElevenLabs · {esc(datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC"))}</p>
+<div style="display:flex;justify-content:space-between;align-items:start;gap:20px;margin-bottom:6px;flex-wrap:wrap;">
+    <div>
+        <h1>📞 SofIA Llama — Dashboard</h1>
+        <p class="subtitle">Calling bot con Twilio + Claude + ElevenLabs · {esc(datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC"))}</p>
+        <div style="margin-top:8px;">Estado scheduler: {estado_visual}</div>
+    </div>
+    <div>{boton_estado}</div>
+</div>
+{banner}
 
 <div class="stats">
     <div class="stat blue"><div class="label">📋 En cola</div><div class="value">{metrics['en_cola']}</div><div class="sub">Esperando llamada</div></div>
@@ -380,7 +480,7 @@ tr:last-child td{{border-bottom:none}}
     <div class="card">
         <div class="card-header"><h2>🕒 Cola — próximas llamadas</h2><span style="font-size:12px;color:#6B7280;">{len(cola)} próximas</span></div>
         <table>
-            <thead><tr><th>Target</th><th>Teléfono</th><th>Tipo</th><th>Programada</th><th>Prioridad</th></tr></thead>
+            <thead><tr><th>Target</th><th>Teléfono</th><th>Tipo</th><th>Programada</th><th>Prio</th><th>Acción</th></tr></thead>
             <tbody>{filas_cola}</tbody>
         </table>
     </div>

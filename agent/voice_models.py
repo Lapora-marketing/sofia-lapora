@@ -167,6 +167,83 @@ class VoiceTranscript(Base):
 
 
 # ════════════════════════════════════════════════════════════
+# VOICE CONFIG — Estado global del scheduler (pause/resume)
+# ════════════════════════════════════════════════════════════
+
+class VoiceConfig(Base):
+    """Singleton: estado global del Voice Bot scheduler.
+
+    Solo hay UNA fila (id=1). Si no existe, se crea automáticamente con
+    defaults (no pausado). Permite pausar/reanudar el scheduler sin
+    redespliegue.
+    """
+    __tablename__ = "voice_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # siempre 1
+    scheduler_pausado: Mapped[bool] = mapped_column(Boolean, default=False)
+    motivo_pausa:      Mapped[str] = mapped_column(String(300), default="")
+    pausado_por:       Mapped[str] = mapped_column(String(100), default="")
+    pausado_en:        Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+async def obtener_config_voice() -> VoiceConfig:
+    """Devuelve la fila singleton. La crea si no existe."""
+    async with async_session() as session:
+        cfg = (await session.execute(
+            select(VoiceConfig).where(VoiceConfig.id == 1)
+        )).scalar_one_or_none()
+        if not cfg:
+            cfg = VoiceConfig(id=1, scheduler_pausado=False)
+            session.add(cfg)
+            await session.commit()
+            await session.refresh(cfg)
+    return cfg
+
+
+async def esta_pausado() -> bool:
+    """True si el scheduler está pausado globalmente."""
+    cfg = await obtener_config_voice()
+    return bool(cfg.scheduler_pausado)
+
+
+async def pausar_scheduler(motivo: str = "", por: str = "admin") -> bool:
+    """Pausa el scheduler. Idempotente."""
+    async with async_session() as session:
+        cfg = (await session.execute(
+            select(VoiceConfig).where(VoiceConfig.id == 1)
+        )).scalar_one_or_none()
+        if not cfg:
+            cfg = VoiceConfig(id=1)
+            session.add(cfg)
+            await session.flush()
+        cfg.scheduler_pausado = True
+        cfg.motivo_pausa = (motivo or "")[:300]
+        cfg.pausado_por = (por or "admin")[:100]
+        cfg.pausado_en = datetime.utcnow()
+        await session.commit()
+    return True
+
+
+async def reanudar_scheduler() -> bool:
+    """Reanuda el scheduler."""
+    async with async_session() as session:
+        cfg = (await session.execute(
+            select(VoiceConfig).where(VoiceConfig.id == 1)
+        )).scalar_one_or_none()
+        if not cfg:
+            cfg = VoiceConfig(id=1, scheduler_pausado=False)
+            session.add(cfg)
+            await session.commit()
+            return True
+        cfg.scheduler_pausado = False
+        cfg.motivo_pausa = ""
+        cfg.pausado_por = ""
+        cfg.pausado_en = None
+        await session.commit()
+    return True
+
+
+# ════════════════════════════════════════════════════════════
 # OPT-OUT LIST — Números que pidieron no ser llamados (CRÍTICO)
 # ════════════════════════════════════════════════════════════
 
