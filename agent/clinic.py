@@ -4184,6 +4184,9 @@ async def landing_old():
       <a href="mailto:laporamarketingdigital@gmail.com" style="color:var(--text-soft);">laporamarketingdigital@gmail.com</a>
     </p>
   </footer>
+
+  <!-- Lapora Bot widget -->
+  <script src="/lapora-bot/widget.js" async defer></script>
 </body></html>""")
 
 
