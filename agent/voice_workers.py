@@ -412,20 +412,118 @@ async def loop_scheduler(stop_event: asyncio.Event):
 # REGISTRO — Inicio/parada
 # ════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════
+# DAY 5 — WORKER MULTI-TENANT: encola confirmaciones de citas por clinic
+# ════════════════════════════════════════════════════════════
+
+INTERVALO_SCAN_CITAS_SEG = 600  # 10 minutos — encolar nuevas confirmaciones
+
+
+async def encolar_confirmaciones_citas():
+    """Para cada clínica con voz_confirmar_citas_activa=True, busca citas
+    que estén entre 24h y 26h en el futuro y aún no se encolaron para
+    confirmación por voz. Las encola con script 'confirmar_cita_clinica'.
+
+    Idempotente: usa CitaClinic.voz_confirmacion_encolada para no duplicar.
+    """
+    from agent.clinic_models import Clinica, CitaClinic, Paciente
+    from agent.voice_models import encolar_prospecto
+
+    ahora = datetime.utcnow()
+    ventana_inicio = ahora + timedelta(hours=24)
+    ventana_fin = ahora + timedelta(hours=26)
+
+    async with async_session() as session:
+        # Citas elegibles: estado=agendada/confirmada, en ventana 24-26h,
+        # NO ya encoladas para voz, clínica con voz_confirmar_citas_activa=True
+        result = await session.execute(
+            select(CitaClinic, Clinica, Paciente)
+            .join(Clinica, CitaClinic.clinica_id == Clinica.id)
+            .join(Paciente, CitaClinic.paciente_id == Paciente.id)
+            .where(CitaClinic.estado.in_(["agendada", "confirmada"]))
+            .where(CitaClinic.fecha_hora >= ventana_inicio)
+            .where(CitaClinic.fecha_hora <= ventana_fin)
+            .where(CitaClinic.voz_confirmacion_encolada == False)  # noqa: E712
+            .where(Clinica.voz_confirmar_citas_activa == True)     # noqa: E712
+            .where(Clinica.activo == True)                         # noqa: E712
+            .where(Clinica.congelada == False)                     # noqa: E712
+        )
+
+        encoladas = 0
+        for cita, clinica, paciente in result.all():
+            if not paciente.telefono or len(paciente.telefono.replace("+", "")) < 8:
+                # Marcar como "procesado" igual para no reintentar
+                cita.voz_confirmacion_encolada = True
+                continue
+
+            # Construir nombre legible de fecha/hora
+            fecha_str = cita.fecha_hora.strftime("%A %d de %B")
+            hora_str = cita.fecha_hora.strftime("%I:%M %p").lstrip("0").lower()
+
+            entry = await encolar_prospecto(
+                target_type="paciente",
+                target_id=str(paciente.id),
+                target_nombre=paciente.nombre or "paciente",
+                telefono=paciente.telefono,
+                script_id="confirmar_cita_clinica",
+                prioridad=70,  # alta — operativo, no esperar
+                clinica_id=clinica.id,
+                programada_para=ahora,  # tan pronto el scheduler pueda
+                intentos_max=2,  # citas son operativas, max 2 retries
+            )
+            if entry is not None:
+                cita.voz_confirmacion_encolada = True
+                encoladas += 1
+
+        if encoladas:
+            await session.commit()
+            logger.info(f"[voice_workers] encoladas {encoladas} confirmaciones de cita")
+
+
+async def loop_scan_citas_clinic(stop_event: asyncio.Event):
+    """Loop cada 10 min: escanea citas próximas de todas las clínicas opt-in."""
+    logger.info(f"[voice_workers] scan citas clinic arrancado — cada {INTERVALO_SCAN_CITAS_SEG}s")
+
+    # Delay inicial
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=45)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop_event.is_set():
+        try:
+            await encolar_confirmaciones_citas()
+        except Exception as e:
+            logger.error(f"[voice_workers] error scan citas: {e}", exc_info=True)
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=INTERVALO_SCAN_CITAS_SEG)
+        except asyncio.TimeoutError:
+            continue
+
+    logger.info("[voice_workers] scan citas clinic detenido")
+
+
+# ════════════════════════════════════════════════════════════
+# REGISTRO — Inicio/parada
+# ════════════════════════════════════════════════════════════
+
 _voice_tasks: list[asyncio.Task] = []
 _voice_stop_event: Optional[asyncio.Event] = None
 
 
 async def iniciar_voice_workers():
-    """Inicia el scheduler async. Idempotente."""
+    """Inicia los workers async. Idempotente."""
     global _voice_stop_event, _voice_tasks
     if _voice_tasks:
         return
     _voice_stop_event = asyncio.Event()
     _voice_tasks = [
         asyncio.create_task(loop_scheduler(_voice_stop_event)),
+        asyncio.create_task(loop_scan_citas_clinic(_voice_stop_event)),
     ]
-    logger.info(f"[voice_workers] iniciados ({len(_voice_tasks)} task)")
+    logger.info(f"[voice_workers] iniciados ({len(_voice_tasks)} tasks)")
 
 
 async def detener_voice_workers():

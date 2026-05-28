@@ -66,6 +66,9 @@ class Clinica(Base):
     ia_precios_basicos: Mapped[Text] = mapped_column(Text, default="", nullable=True)
     ia_instrucciones_extra: Mapped[Text] = mapped_column(Text, default="", nullable=True)
 
+    # Voice Bot per-tenant — confirmación automática de citas por llamada
+    voz_confirmar_citas_activa: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
     # Suspensión / billing
     congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     motivo_suspension: Mapped[str] = mapped_column(String(300), default="", nullable=True)
@@ -237,6 +240,9 @@ class CitaClinic(Base):
     # Recordatorios automáticos (Sprint Opción B Día 3)
     recordatorio_24h_enviado: Mapped[bool] = mapped_column(Boolean, default=False)
     recordatorio_2h_enviado:  Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Voice Bot Day 5 — flag idempotente para no duplicar encolado
+    voz_confirmacion_encolada: Mapped[bool] = mapped_column(Boolean, default=False)
 
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -573,6 +579,9 @@ async def aplicar_migraciones():
             # Recordatorios automáticos (Sprint Opcion B Día 3)
             "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS recordatorio_24h_enviado BOOLEAN DEFAULT FALSE",
             "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS recordatorio_2h_enviado BOOLEAN DEFAULT FALSE",
+            # Voice Bot per-tenant (Sprint Voice Bot Día 5)
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS voz_confirmar_citas_activa BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS voz_confirmacion_encolada BOOLEAN DEFAULT FALSE",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -615,8 +624,14 @@ async def aplicar_migraciones():
                         migraciones.append("ALTER TABLE clinic_citas ADD COLUMN recordatorio_24h_enviado BOOLEAN DEFAULT 0")
                     if "recordatorio_2h_enviado" not in columnas_citas:
                         migraciones.append("ALTER TABLE clinic_citas ADD COLUMN recordatorio_2h_enviado BOOLEAN DEFAULT 0")
+                    # Voice Bot Día 5
+                    if "voz_confirmacion_encolada" not in columnas_citas:
+                        migraciones.append("ALTER TABLE clinic_citas ADD COLUMN voz_confirmacion_encolada BOOLEAN DEFAULT 0")
                 except Exception:
                     pass
+                # Voice Bot Día 5: campo en clinic_clinicas
+                if "voz_confirmar_citas_activa" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN voz_confirmar_citas_activa BOOLEAN DEFAULT 0")
             except Exception:
                 pass  # Tabla no existe todavía, create_all la creará completa
 

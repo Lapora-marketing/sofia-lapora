@@ -2932,6 +2932,35 @@ async def vista_config(
           {'' if wa_conectado else '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;padding:10px 14px;border-radius:8px;margin-top:10px;font-size:13px;">⚠ Configurá WhatsApp arriba antes de activar SofIA.</div>'}
         </div>
 
+        <!-- VOICE BOT PER-TENANT — Confirmación de citas por llamada -->
+        <div class="card" id="voice-config" style="border:2px solid {'#10B981' if clinica.voz_confirmar_citas_activa else '#E5E7EB'};">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:16px;font-weight:700;">📞 SofIA Llama — Confirmación de citas por voz</h2>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+              <input type="checkbox" name="voz_confirmar_citas_activa" value="1" {'checked' if clinica.voz_confirmar_citas_activa else ''} style="width:44px;height:24px;cursor:pointer;accent-color:#10B981;">
+              <span style="font-size:13px;font-weight:700;color:{'#10B981' if clinica.voz_confirmar_citas_activa else '#6B7280'};">{'ACTIVA' if clinica.voz_confirmar_citas_activa else 'INACTIVA'}</span>
+            </label>
+          </div>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;line-height:1.6;">
+            Cuando está <strong>activa</strong>, SofIA llama por teléfono a cada paciente <strong>24 horas antes</strong> de su cita
+            para confirmar asistencia. Habla en español natural y entiende respuestas libres. Si el paciente quiere reagendar
+            o cancelar, te lo notifica para que tu equipo lo gestione.
+          </p>
+
+          <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.6;">
+            <strong>💡 Funciona así:</strong>
+            <ol style="margin:6px 0 0 18px;font-size:12px;">
+              <li>Cada paciente con cita en las próximas 24-26h recibe una llamada automática</li>
+              <li>SofIA se identifica como asistente virtual de tu clínica</li>
+              <li>Confirma asistencia, propone reagenda o registra cancelación</li>
+              <li>Solo llama en horario hábil: Lun-Vie 9-12 + 2-5pm (hora Colombia)</li>
+              <li>Si el paciente no contesta, reintenta 1 vez al día siguiente</li>
+            </ol>
+          </div>
+
+          {('<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;padding:10px 14px;border-radius:8px;margin-top:10px;font-size:13px;"><strong>⚠ Requiere plan Pro o Studio</strong> para activar llamadas automáticas. <a href="#">Subir plan</a></div>' if clinica.plan == 'free' else '')}
+        </div>
+
         <!-- BRANDING (solo Pro y Studio) -->
         <div class="card">
           <h2 style="font-size:16px;font-weight:700;margin-bottom:6px;">🎨 Branding</h2>
@@ -2991,6 +3020,8 @@ async def guardar_config(
     ia_horario: str = Form(""),
     ia_precios_basicos: str = Form(""),
     ia_instrucciones_extra: str = Form(""),
+    # Voice Bot per-tenant
+    voz_confirmar_citas_activa: Optional[str] = Form(None),
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -3024,6 +3055,12 @@ async def guardar_config(
             c.ia_horario = ia_horario.strip()[:300]
             c.ia_precios_basicos = ia_precios_basicos.strip()[:5000]
             c.ia_instrucciones_extra = ia_instrucciones_extra.strip()[:5000]
+
+            # Voice Bot per-tenant: solo plan pro/studio puede activar
+            if c.plan in ("pro", "studio"):
+                c.voz_confirmar_citas_activa = (voz_confirmar_citas_activa == "1")
+            else:
+                c.voz_confirmar_citas_activa = False
 
             c.actualizado_en = datetime.utcnow()
             await session.commit()
