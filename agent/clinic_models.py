@@ -15,7 +15,7 @@ import secrets
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import (
-    String, Text, DateTime, Integer, Boolean, ForeignKey, select, or_
+    String, Text, DateTime, Integer, Boolean, ForeignKey, select, or_, func
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +58,14 @@ class Clinica(Base):
     google_sheet_id:   Mapped[str] = mapped_column(String(200), default="", nullable=True)
     google_calendar_id: Mapped[str] = mapped_column(String(200), default="", nullable=True)
 
+    # IA SofIA per-tenant
+    ia_activa: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    ia_saludo: Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    ia_servicios: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    ia_horario: Mapped[str] = mapped_column(String(300), default="", nullable=True)
+    ia_precios_basicos: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    ia_instrucciones_extra: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+
     # Suspensión / billing
     congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     motivo_suspension: Mapped[str] = mapped_column(String(300), default="", nullable=True)
@@ -89,6 +97,33 @@ class UsuarioClinic(Base):
     activo:        Mapped[bool] = mapped_column(Boolean, default=True)
     ultimo_login:  Mapped[datetime] = mapped_column(DateTime, nullable=True)
     creado_en:     Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ════════════════════════════════════════════════════════════
+# INVITACION DE USUARIO — Link que el owner comparte con su equipo
+# ════════════════════════════════════════════════════════════
+
+class InvitacionUsuario(Base):
+    """Invitación pendiente para agregar usuario a una clínica.
+
+    El owner genera una invitación → comparte el link → el invitado
+    pone su nombre + password → se crea UsuarioClinic.
+    """
+    __tablename__ = "clinic_invitaciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id: Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+
+    token: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    email_invitado: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    rol: Mapped[str] = mapped_column(String(30), default="staff")  # owner | admin | staff
+
+    # Estado
+    usada:        Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    invitado_por: Mapped[int] = mapped_column(ForeignKey("clinic_usuarios.id"), nullable=True)
+    fecha_uso:    Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    expira_en:    Mapped[datetime] = mapped_column(DateTime, index=True)
+    creado_en:    Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 # ════════════════════════════════════════════════════════════
@@ -198,6 +233,10 @@ class CitaClinic(Base):
     estado:      Mapped[str] = mapped_column(String(30), default="agendada", index=True)
     notas:       Mapped[Text] = mapped_column(Text, default="", nullable=True)
     google_event_id: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+
+    # Recordatorios automáticos (Sprint Opción B Día 3)
+    recordatorio_24h_enviado: Mapped[bool] = mapped_column(Boolean, default=False)
+    recordatorio_2h_enviado:  Mapped[bool] = mapped_column(Boolean, default=False)
 
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -346,6 +385,158 @@ async def obtener_clinica(clinica_id: int) -> Clinica | None:
         )).scalar_one_or_none()
 
 
+# ════════════════════════════════════════════════════════════
+# LÍMITES POR PLAN — Cuántos usuarios puede tener cada clínica
+# ════════════════════════════════════════════════════════════
+
+LIMITE_USUARIOS_POR_PLAN = {
+    "free":   1,           # Solo el owner
+    "pro":    5,           # 5 usuarios (Pro $100 USD/mes)
+    "studio": 9999,        # Ilimitado (Studio $250 USD/mes)
+}
+
+
+def limite_usuarios(plan: str) -> int:
+    """Retorna cuántos usuarios totales puede tener una clínica según su plan."""
+    return LIMITE_USUARIOS_POR_PLAN.get((plan or "free").lower(), 1)
+
+
+async def contar_usuarios_clinica(clinica_id: int) -> int:
+    """Cuántos usuarios activos tiene la clínica actualmente."""
+    from sqlalchemy import func
+    async with async_session() as session:
+        n = (await session.execute(
+            select(func.count(UsuarioClinic.id))
+            .where(UsuarioClinic.clinica_id == clinica_id)
+            .where(UsuarioClinic.activo == True)  # noqa: E712
+        )).scalar() or 0
+    return int(n)
+
+
+async def puede_invitar_usuario(clinica: Clinica) -> tuple[bool, str]:
+    """Verifica si la clínica puede invitar un usuario más.
+
+    Returns: (puede, motivo_si_no)
+    """
+    limite = limite_usuarios(clinica.plan)
+    actuales = await contar_usuarios_clinica(clinica.id)
+
+    # Contar invitaciones pendientes (no usadas, no expiradas) también
+    from sqlalchemy import and_
+    async with async_session() as session:
+        n_pendientes = (await session.execute(
+            select(func.count(InvitacionUsuario.id))
+            .where(InvitacionUsuario.clinica_id == clinica.id)
+            .where(InvitacionUsuario.usada == False)  # noqa: E712
+            .where(InvitacionUsuario.expira_en > datetime.utcnow())
+        )).scalar() or 0
+
+    total = actuales + int(n_pendientes)
+    if total >= limite:
+        plan_nombre = (clinica.plan or "free").lower()
+        if plan_nombre == "free":
+            return False, f"Plan Free solo permite 1 usuario. Sube a Pro ($100/mes) para invitar hasta 5."
+        elif plan_nombre == "pro":
+            return False, f"Plan Pro permite 5 usuarios y ya tienes {total}. Sube a Studio ($250/mes) para usuarios ilimitados."
+        else:
+            return False, f"Ya alcanzaste el límite de {limite} usuarios."
+    return True, ""
+
+
+async def crear_invitacion(
+    clinica_id: int,
+    invitado_por_id: int,
+    email_invitado: str = "",
+    rol: str = "staff",
+    dias_validez: int = 7,
+) -> InvitacionUsuario:
+    """Crea una invitación con token único. El owner comparte el link."""
+    from datetime import timedelta
+    token = secrets.token_urlsafe(32)
+    expira = datetime.utcnow() + timedelta(days=dias_validez)
+
+    async with async_session() as session:
+        invitacion = InvitacionUsuario(
+            clinica_id=clinica_id,
+            token=token,
+            email_invitado=(email_invitado or "").lower().strip(),
+            rol=rol if rol in ("owner", "admin", "staff") else "staff",
+            invitado_por=invitado_por_id,
+            expira_en=expira,
+        )
+        session.add(invitacion)
+        await session.commit()
+        await session.refresh(invitacion)
+    return invitacion
+
+
+async def consumir_invitacion(
+    token: str,
+    nombre: str,
+    email: str,
+    password: str,
+) -> tuple[UsuarioClinic | None, str]:
+    """Acepta una invitación: crea el UsuarioClinic asociado.
+
+    Returns: (usuario_creado | None, mensaje_error)
+    """
+    if not nombre or not email or not password or len(password) < 6:
+        return None, "Faltan datos o la contraseña es muy corta (mín 6)"
+
+    async with async_session() as session:
+        inv = (await session.execute(
+            select(InvitacionUsuario).where(InvitacionUsuario.token == token)
+        )).scalar_one_or_none()
+
+        if not inv:
+            return None, "Invitación no encontrada o inválida"
+        if inv.usada:
+            return None, "Esta invitación ya fue usada"
+        if inv.expira_en < datetime.utcnow():
+            return None, "Esta invitación expiró. Pide al admin generar una nueva."
+
+        # Verificar que no exista ya un usuario con ese email
+        existente = (await session.execute(
+            select(UsuarioClinic).where(UsuarioClinic.email == email.lower())
+        )).scalar_one_or_none()
+        if existente:
+            return None, f"Ya existe un usuario con el email {email}"
+
+        # Validar límite del plan otra vez (por si llegamos al límite mientras existía la invitación)
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.id == inv.clinica_id)
+        )).scalar_one_or_none()
+        if not clinica:
+            return None, "Clínica no encontrada"
+        actuales = (await session.execute(
+            select(func.count(UsuarioClinic.id))
+            .where(UsuarioClinic.clinica_id == clinica.id)
+            .where(UsuarioClinic.activo == True)  # noqa: E712
+        )).scalar() or 0
+        if actuales >= limite_usuarios(clinica.plan):
+            return None, "La clínica ya alcanzó el límite de usuarios de su plan"
+
+        # Crear el usuario
+        usuario = UsuarioClinic(
+            clinica_id=inv.clinica_id,
+            nombre=nombre.strip()[:200],
+            email=email.lower().strip()[:200],
+            password_hash=hash_password(password),
+            rol=inv.rol,
+            activo=True,
+        )
+        session.add(usuario)
+
+        # Marcar invitación como usada
+        inv.usada = True
+        inv.fecha_uso = datetime.utcnow()
+
+        await session.commit()
+        await session.refresh(usuario)
+
+    return usuario, ""
+
+
 async def aplicar_migraciones():
     """Aplica migraciones idempotentes a tablas existentes.
 
@@ -372,6 +563,16 @@ async def aplicar_migraciones():
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS fecha_proximo_pago TIMESTAMP",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS monto_mensual_usd INTEGER DEFAULT 0",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS google_calendar_id VARCHAR(200) DEFAULT ''",
+            # IA SofIA per-tenant (Sprint Opcion B)
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ia_activa BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ia_saludo VARCHAR(500) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ia_servicios TEXT DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ia_horario VARCHAR(300) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ia_precios_basicos TEXT DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ia_instrucciones_extra TEXT DEFAULT ''",
+            # Recordatorios automáticos (Sprint Opcion B Día 3)
+            "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS recordatorio_24h_enviado BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS recordatorio_2h_enviado BOOLEAN DEFAULT FALSE",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -392,6 +593,30 @@ async def aplicar_migraciones():
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN monto_mensual_usd INTEGER DEFAULT 0")
                 if "google_calendar_id" not in columnas_existentes:
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN google_calendar_id VARCHAR(200) DEFAULT ''")
+                # IA SofIA per-tenant (Sprint Opcion B)
+                if "ia_activa" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ia_activa BOOLEAN DEFAULT 0")
+                if "ia_saludo" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ia_saludo VARCHAR(500) DEFAULT ''")
+                if "ia_servicios" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ia_servicios TEXT DEFAULT ''")
+                if "ia_horario" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ia_horario VARCHAR(300) DEFAULT ''")
+                if "ia_precios_basicos" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ia_precios_basicos TEXT DEFAULT ''")
+                if "ia_instrucciones_extra" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ia_instrucciones_extra TEXT DEFAULT ''")
+
+                # Recordatorios automáticos (Sprint Opcion B Día 3) — tabla clinic_citas
+                try:
+                    result_citas = await conn.execute(text("PRAGMA table_info(clinic_citas)"))
+                    columnas_citas = {row[1] for row in result_citas.fetchall()}
+                    if "recordatorio_24h_enviado" not in columnas_citas:
+                        migraciones.append("ALTER TABLE clinic_citas ADD COLUMN recordatorio_24h_enviado BOOLEAN DEFAULT 0")
+                    if "recordatorio_2h_enviado" not in columnas_citas:
+                        migraciones.append("ALTER TABLE clinic_citas ADD COLUMN recordatorio_2h_enviado BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
             except Exception:
                 pass  # Tabla no existe todavía, create_all la creará completa
 

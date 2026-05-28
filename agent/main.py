@@ -49,8 +49,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Migraciones fallaron (no crítico): {e}")
 
-    # Iniciar el scheduler de recordatorios en background
+    # Iniciar el scheduler de recordatorios de SofIA (CRM Lapora) en background
     scheduler_task = asyncio.create_task(scheduler_loop())
+
+    # Iniciar workers de Lapora Clinic (recordatorios per-tenant)
+    workers_clinic_iniciados = False
+    try:
+        from agent.clinic_workers import iniciar_workers as iniciar_workers_clinic
+        await iniciar_workers_clinic()
+        workers_clinic_iniciados = True
+    except Exception as e:
+        logger.warning(f"Workers Clinic no se pudieron iniciar (no crítico): {e}")
 
     logger.info("=" * 60)
     logger.info("  SofIA — Agente de Lapora arrancando...")
@@ -59,16 +68,25 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Puerto: {PORT}")
     logger.info(f"  Proveedor WhatsApp: {proveedor.__class__.__name__}")
     logger.info(f"  Entorno: {ENVIRONMENT}")
-    logger.info(f"  Scheduler recordatorios: ACTIVO (revisa cada 5 min)")
+    logger.info(f"  Scheduler SofIA CRM: ACTIVO (revisa cada 5 min)")
+    logger.info(f"  Workers Lapora Clinic: {'ACTIVOS' if workers_clinic_iniciados else 'OFF'}")
     logger.info("=" * 60)
     yield
 
-    # Apagar el scheduler limpiamente
+    # Apagar el scheduler SofIA limpiamente
     scheduler_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
         pass
+
+    # Apagar workers Clinic limpiamente
+    if workers_clinic_iniciados:
+        try:
+            from agent.clinic_workers import detener_workers as detener_workers_clinic
+            await detener_workers_clinic()
+        except Exception as e:
+            logger.warning(f"Error deteniendo workers Clinic: {e}")
 
     logger.info("SofIA: servidor apagandose.")
 

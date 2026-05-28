@@ -21,9 +21,12 @@ URLs privadas (requieren sesion):
 
 import os
 import html
+import logging
 import secrets
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger("agentkit")
 from fastapi import APIRouter, Depends, Request, Form, HTTPException, Cookie, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, func, or_, desc
@@ -31,9 +34,11 @@ from sqlalchemy import select, func, or_, desc
 from agent.memory import async_session
 from agent.clinic_models import (
     Clinica, UsuarioClinic, Paciente, MensajeUnificado,
-    Llamada, CitaClinic, PlantillaRespuesta,
+    Llamada, CitaClinic, PlantillaRespuesta, InvitacionUsuario,
     crear_clinica, autenticar_usuario, obtener_clinica,
-    cargar_demo_data,
+    cargar_demo_data, hash_password,
+    limite_usuarios, contar_usuarios_clinica,
+    puede_invitar_usuario, crear_invitacion, consumir_invitacion,
 )
 from io import StringIO
 import csv as _csv_mod
@@ -861,6 +866,7 @@ CSS_CLINIC = """
     {icon: '☎', name: 'Llamadas',         url: '/clinic/app/llamadas',   cat: 'Páginas'},
     {icon: '✚', name: 'Registrar llamada',url: '/clinic/app/llamadas/nueva', cat: 'Acciones'},
     {icon: '⌨', name: 'Plantillas',       url: '/clinic/app/plantillas', cat: 'Páginas'},
+    {icon: '◉', name: 'Usuarios del equipo', url: '/clinic/app/usuarios', cat: 'Páginas'},
     {icon: '⚙', name: 'Configuración',    url: '/clinic/app/configuracion', cat: 'Páginas'},
     {icon: '⎋', name: 'Cerrar sesión',    url: '/clinic/logout',         cat: 'Cuenta'},
   ];
@@ -987,6 +993,7 @@ def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
         ("citas",     "Citas",      "/clinic/app/citas",       "M3 4h18v2H3z M3 10h18v10H3z"),
         ("llamadas",  "Llamadas",   "/clinic/app/llamadas",    "M22 16.92v3a2 2 0 0 1-2.18 2A19.79 19.79 0 0 1 2 5.18 2 2 0 0 1 4 3h3"),
         ("plantillas","Plantillas", "/clinic/app/plantillas",  "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"),
+        ("usuarios",  "Equipo",     "/clinic/app/usuarios",    "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87"),
         ("config",    "Configuración","/clinic/app/configuracion","M12 1v6 M12 17v6 M4.22 4.22l4.24 4.24"),
     ]
     links = ""
@@ -1336,12 +1343,13 @@ async def dashboard(
         bienvenida_html = f'<div class="alert alert-warning" style="margin-bottom:16px;"><strong>👁️ SUPER ADMIN</strong> — Estás accediendo como esta clínica ({html.escape(sesion_impersonate)}). <a href="/clinic/superadmin" style="color:inherit;text-decoration:underline;font-weight:700;">Volver al panel</a></div>'
 
     # === ONBOARDING CHECKLIST ===
-    # Detecta progreso: WA conectado, pacientes creados, plantilla creada, primera cita
+    # Detecta progreso: WA conectado, pacientes, plantillas, calendar, IA SofIA
     pasos_setup = [
         ("Conectar WhatsApp Business",       bool(clinica.whatsapp_phone_id), "/clinic/app/configuracion#whatsapp"),
         ("Importar o crear primer paciente", total_pacientes > 0,             "/clinic/app/pacientes/nuevo"),
         ("Conectar Google Calendar",         bool(clinica.google_calendar_id), "/clinic/app/configuracion#calendar"),
         ("Crear plantillas de respuesta",    False,                            "/clinic/app/plantillas/nueva"),
+        ("Activar IA SofIA (responde 24/7)", bool(clinica.ia_activa),         "/clinic/app/configuracion#ia-config"),
     ]
     # Verificar plantillas
     async with async_session() as session:
@@ -2877,6 +2885,53 @@ async def vista_config(
           <input type="text" name="google_calendar_id" value="{esc(clinica.google_calendar_id)}" placeholder="tucorreo@gmail.com o ID@group.calendar.google.com" class="input">
         </div>
 
+        <!-- IA SOFIA PER-TENANT -->
+        <div class="card" id="ia-config" style="border:2px solid {'#10B981' if clinica.ia_activa else '#E5E7EB'};">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:16px;font-weight:700;">🤖 IA SofIA — Tu asistente 24/7</h2>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+              <input type="checkbox" name="ia_activa" value="1" {'checked' if clinica.ia_activa else ''} style="width:44px;height:24px;cursor:pointer;accent-color:#10B981;">
+              <span style="font-size:13px;font-weight:700;color:{'#10B981' if clinica.ia_activa else '#6B7280'};">{'ACTIVA' if clinica.ia_activa else 'INACTIVA'}</span>
+            </label>
+          </div>
+          <p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;line-height:1.6;">
+            Cuando está <strong>activa</strong>, SofIA responde automáticamente a los mensajes de WhatsApp en {'menos de 5 segundos' if wa_conectado else '... pero primero configurá WhatsApp arriba ↑'}.
+            Si un paciente pide hablar con humano, SofIA le pasa el mensaje al equipo y deja de responder.
+          </p>
+
+          <div style="display:flex;flex-direction:column;gap:14px;{'opacity:0.5;pointer-events:none;' if not wa_conectado else ''}">
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Saludo inicial</label>
+              <input type="text" name="ia_saludo" value="{esc(clinica.ia_saludo)}" placeholder="¡Hola! Soy SofIA, asistente virtual de {esc(clinica.nombre or 'tu clínica')}. ¿En qué te puedo ayudar?" class="input">
+              <p style="font-size:11px;color:var(--text-soft);margin-top:4px;">Primera frase que usa SofIA al saludar a un paciente nuevo.</p>
+            </div>
+
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Horario de atención</label>
+              <input type="text" name="ia_horario" value="{esc(clinica.ia_horario)}" placeholder="Lunes a viernes 8am-6pm, sábados 9am-1pm" class="input">
+            </div>
+
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Servicios que ofrece</label>
+              <textarea name="ia_servicios" rows="3" placeholder="Ortodoncia, blanqueamiento dental, limpieza profesional, implantes, periodoncia..." class="input" style="font-family:inherit;resize:vertical;">{esc(clinica.ia_servicios)}</textarea>
+              <p style="font-size:11px;color:var(--text-soft);margin-top:4px;">SofIA mencionará estos servicios cuando un paciente pregunte qué hacen.</p>
+            </div>
+
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Precios públicos (opcional)</label>
+              <textarea name="ia_precios_basicos" rows="4" placeholder="Consulta inicial: $80.000&#10;Limpieza dental: $150.000&#10;Blanqueamiento: $450.000" class="input" style="font-family:inherit;resize:vertical;">{esc(clinica.ia_precios_basicos)}</textarea>
+              <p style="font-size:11px;color:var(--text-soft);margin-top:4px;">⚠ SofIA NUNCA inventa precios. Si lo dejás vacío, cuando pregunten precios responderá que un asesor humano les contactará.</p>
+            </div>
+
+            <div>
+              <label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Instrucciones extra (opcional)</label>
+              <textarea name="ia_instrucciones_extra" rows="3" placeholder="Reglas custom: no agendes citas los lunes, siempre menciona la promoción del mes, etc." class="input" style="font-family:inherit;resize:vertical;">{esc(clinica.ia_instrucciones_extra)}</textarea>
+            </div>
+          </div>
+
+          {'' if wa_conectado else '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;padding:10px 14px;border-radius:8px;margin-top:10px;font-size:13px;">⚠ Configurá WhatsApp arriba antes de activar SofIA.</div>'}
+        </div>
+
         <!-- BRANDING (solo Pro y Studio) -->
         <div class="card">
           <h2 style="font-size:16px;font-weight:700;margin-bottom:6px;">🎨 Branding</h2>
@@ -2929,6 +2984,13 @@ async def guardar_config(
     google_calendar_id: str = Form(""),
     logo_url: str = Form(""),
     color_primario: str = Form("#FF3B30"),
+    # IA SofIA per-tenant
+    ia_activa: Optional[str] = Form(None),
+    ia_saludo: str = Form(""),
+    ia_servicios: str = Form(""),
+    ia_horario: str = Form(""),
+    ia_precios_basicos: str = Form(""),
+    ia_instrucciones_extra: str = Form(""),
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -2953,6 +3015,16 @@ async def guardar_config(
             if c.plan != "free":
                 c.logo_url = logo_url.strip()
                 c.color_primario = color_primario
+
+            # IA SofIA: solo se puede activar si tiene WhatsApp configurado
+            nueva_ia_activa = (ia_activa == "1") and bool(c.whatsapp_phone_id and c.whatsapp_token)
+            c.ia_activa = nueva_ia_activa
+            c.ia_saludo = ia_saludo.strip()[:500]
+            c.ia_servicios = ia_servicios.strip()[:5000]
+            c.ia_horario = ia_horario.strip()[:300]
+            c.ia_precios_basicos = ia_precios_basicos.strip()[:5000]
+            c.ia_instrucciones_extra = ia_instrucciones_extra.strip()[:5000]
+
             c.actualizado_en = datetime.utcnow()
             await session.commit()
 
@@ -2965,10 +3037,10 @@ async def guardar_config(
 
 @router.post("/app/configuracion/sync-sheets", response_class=HTMLResponse)
 async def sync_google_sheets(clinic_session: Optional[str] = Cookie(None)):
-    """Sincroniza pacientes desde la URL de Google Sheets configurada.
+    """Sincroniza pacientes desde Google Sheets (botón manual).
 
-    La hoja debe estar publicada como CSV (Archivo > Compartir > Publicar en web > CSV).
-    Columnas esperadas (case-insensitive): nombre, telefono, email, tratamiento, notas
+    Reusa la misma función que el worker periódico de clinic_workers.py.
+    La hoja debe ser pública. Columnas: nombre, telefono, email, tratamiento, notas.
     """
     sesion = obtener_sesion(clinic_session)
     if not sesion:
@@ -2984,99 +3056,350 @@ async def sync_google_sheets(clinic_session: Optional[str] = Cookie(None)):
                 status_code=303,
             )
 
-        # Convertir URL/ID a URL de export CSV
-        import re as _re_sh
-        sheet_input = clinica.google_sheet_id.strip()
-        # Si es URL completa, extraer ID
-        m = _re_sh.search(r"/d/([a-zA-Z0-9_-]+)", sheet_input)
-        sheet_id = m.group(1) if m else sheet_input
-        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-
-        # Descargar
-        try:
-            import httpx as _httpx_sh
-            async with _httpx_sh.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                resp = await client.get(csv_url)
-            if resp.status_code != 200:
-                return RedirectResponse(
-                    f"/clinic/app/configuracion?error=No+se+pudo+descargar+(HTTP+{resp.status_code}).+Hace+publica+la+hoja",
-                    status_code=303,
-                )
-            contenido_csv = resp.text
-        except Exception as e:
-            return RedirectResponse(
-                f"/clinic/app/configuracion?error=Error+descargando:+{html.escape(str(e)[:60])}",
-                status_code=303,
-            )
-
-        # Parsear CSV y hacer upsert
-        import csv as _csv
-        from io import StringIO
-        reader = _csv.DictReader(StringIO(contenido_csv))
-        # Normalizar headers (lowercase, sin acentos)
-        if reader.fieldnames:
-            reader.fieldnames = [
-                (h or "").lower().strip()
-                .replace("é", "e").replace("ó", "o").replace("í", "i")
-                .replace("á", "a").replace("ú", "u").replace("ñ", "n")
-                for h in reader.fieldnames
-            ]
-
-        creados = actualizados = 0
-        ahora = datetime.utcnow()
-        for row in reader:
-            nombre = (row.get("nombre") or row.get("name") or "").strip()
-            if not nombre:
-                continue
-            telefono = (row.get("telefono") or row.get("teléfono") or row.get("phone") or "").strip()
-            email = (row.get("email") or row.get("correo") or "").strip().lower()
-            tratamiento = (row.get("tratamiento") or row.get("tratamiento_actual") or "").strip()
-            notas = (row.get("notas") or row.get("notes") or "").strip()
-
-            # Upsert por telefono o email
-            existing = None
-            if telefono:
-                existing = (await session.execute(
-                    select(Paciente)
-                    .where(Paciente.clinica_id == clinica.id)
-                    .where(Paciente.telefono == telefono)
-                )).scalar_one_or_none()
-            if not existing and email:
-                existing = (await session.execute(
-                    select(Paciente)
-                    .where(Paciente.clinica_id == clinica.id)
-                    .where(Paciente.email == email)
-                )).scalar_one_or_none()
-
-            if existing:
-                existing.nombre = nombre
-                if telefono: existing.telefono = telefono
-                if email: existing.email = email
-                if tratamiento: existing.tratamiento_actual = tratamiento
-                if notas: existing.notas_basicas = notas
-                existing.ultimo_contacto = ahora
-                actualizados += 1
-            else:
-                session.add(Paciente(
-                    clinica_id=clinica.id,
-                    nombre=nombre,
-                    telefono=telefono,
-                    email=email,
-                    tratamiento_actual=tratamiento,
-                    notas_basicas=notas,
-                    fuente="sheets",
-                    estado="nuevo",
-                    primer_contacto=ahora,
-                    ultimo_contacto=ahora,
-                ))
-                creados += 1
-
-        await session.commit()
-
+    # Reusar lógica del worker (sin duplicar código)
+    from agent.clinic_workers import sincronizar_sheet_clinica
+    resultado = await sincronizar_sheet_clinica(clinica)
+    if not resultado["exito"]:
+        return RedirectResponse(
+            f"/clinic/app/configuracion?error={html.escape(resultado['error'][:100])}",
+            status_code=303,
+        )
     return RedirectResponse(
-        f"/clinic/app/configuracion?guardado=1&sync_creados={creados}&sync_actualizados={actualizados}",
+        f"/clinic/app/configuracion?guardado=1&sync_creados={resultado['creados']}&sync_actualizados={resultado['actualizados']}",
         status_code=303,
     )
+
+
+# ════════════════════════════════════════════════════════════
+# 10.5) USUARIOS DEL EQUIPO — Invitar miembros (Sprint Opcion B Día 5)
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/usuarios", response_class=HTMLResponse)
+async def vista_usuarios(
+    invitado: Optional[str] = None,
+    error: Optional[str] = None,
+    eliminado: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Lista usuarios del equipo + invitaciones pendientes."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    def esc(s): return html.escape(s or "", quote=True)
+
+    async with async_session() as session:
+        usuarios = (await session.execute(
+            select(UsuarioClinic)
+            .where(UsuarioClinic.clinica_id == clinica.id)
+            .where(UsuarioClinic.activo == True)  # noqa: E712
+            .order_by(UsuarioClinic.creado_en)
+        )).scalars().all()
+
+        invitaciones = (await session.execute(
+            select(InvitacionUsuario)
+            .where(InvitacionUsuario.clinica_id == clinica.id)
+            .where(InvitacionUsuario.usada == False)  # noqa: E712
+            .where(InvitacionUsuario.expira_en > datetime.utcnow())
+            .order_by(desc(InvitacionUsuario.creado_en))
+        )).scalars().all()
+
+    limite = limite_usuarios(clinica.plan)
+    actuales = len(usuarios)
+    pendientes = len(invitaciones)
+    total = actuales + pendientes
+    puede_invitar = total < limite
+    plan_nombre = (clinica.plan or "free").lower()
+
+    # Banner de feedback
+    banner = ""
+    if invitado:
+        link_invitacion = f"https://lapora.studio/clinic/aceptar-invitacion/{invitado}"
+        banner = f'''<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:14px 16px;border-radius:10px;margin-bottom:20px;">
+            <strong style="display:block;margin-bottom:6px;">✓ Invitación creada</strong>
+            <p style="font-size:13px;margin-bottom:8px;">Comparte este link con la persona que quieres invitar (válido por 7 días):</p>
+            <div style="display:flex;gap:8px;align-items:center;background:white;border:1px solid #10B981;border-radius:8px;padding:8px 12px;">
+                <code id="link-inv" style="flex:1;font-size:12px;color:#065F46;word-break:break-all;">{esc(link_invitacion)}</code>
+                <button onclick="navigator.clipboard.writeText(document.getElementById('link-inv').textContent);this.textContent='Copiado';" style="background:#10B981;color:white;border:none;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Copiar</button>
+            </div>
+        </div>'''
+    elif error:
+        banner = f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px 16px;border-radius:10px;margin-bottom:20px;font-size:14px;">⚠ {esc(error)}</div>'
+    elif eliminado:
+        banner = '<div style="background:#ECFDF5;border:1px solid #10B981;color:#065F46;padding:12px 16px;border-radius:10px;margin-bottom:20px;font-size:14px;font-weight:600;">✓ Usuario eliminado del equipo</div>'
+
+    # Tabla de usuarios
+    filas_usuarios = ""
+    for u in usuarios:
+        es_propio = (u.id == sesion["usuario_id"])
+        ultimo = u.ultimo_login.strftime("%d/%m/%Y") if u.ultimo_login else "Nunca"
+        accion = ('<span style="color:#9CA3AF;font-size:12px;">— tú —</span>' if es_propio
+                  else f'<form method="post" action="/clinic/app/usuarios/{u.id}/eliminar" style="display:inline;" onsubmit="return confirm(\'¿Eliminar este usuario del equipo?\');"><button class="btn btn-ghost" style="font-size:12px;padding:4px 10px;color:#EF4444;border-color:#FCA5A5;">Eliminar</button></form>')
+        filas_usuarios += f'''
+        <tr>
+            <td><strong>{esc(u.nombre)}</strong></td>
+            <td>{esc(u.email)}</td>
+            <td><span class="badge badge-pro" style="text-transform:capitalize;">{esc(u.rol)}</span></td>
+            <td style="color:var(--text-soft);font-size:13px;">{ultimo}</td>
+            <td style="text-align:right;">{accion}</td>
+        </tr>'''
+
+    # Tabla de invitaciones pendientes
+    filas_inv = ""
+    for inv in invitaciones:
+        link_inv = f"/clinic/aceptar-invitacion/{inv.token}"
+        dias_restantes = (inv.expira_en - datetime.utcnow()).days
+        filas_inv += f'''
+        <tr style="background:#FFFBEB;">
+            <td><em>{esc(inv.email_invitado) if inv.email_invitado else "(sin email definido)"}</em></td>
+            <td><span class="badge" style="background:#FEF3C7;color:#92400E;text-transform:capitalize;">{esc(inv.rol)}</span></td>
+            <td style="color:#92400E;font-size:13px;">Pendiente · expira en {dias_restantes}d</td>
+            <td style="text-align:right;">
+                <button onclick="navigator.clipboard.writeText(window.location.origin + '{link_inv}');this.textContent='Copiado';" class="btn btn-ghost" style="font-size:12px;padding:4px 10px;">Copiar link</button>
+                <form method="post" action="/clinic/app/usuarios/invitacion/{inv.id}/cancelar" style="display:inline;"><button class="btn btn-ghost" style="font-size:12px;padding:4px 10px;color:#EF4444;border-color:#FCA5A5;">Cancelar</button></form>
+            </td>
+        </tr>'''
+
+    # Form para invitar
+    if puede_invitar:
+        form_invitar = f'''
+        <form method="post" action="/clinic/app/usuarios/invitar" style="background:white;border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px;">
+            <h3 style="font-size:15px;font-weight:700;margin-bottom:12px;">✚ Invitar nuevo usuario</h3>
+            <div style="display:grid;grid-template-columns:2fr 1fr auto;gap:10px;align-items:end;">
+                <div>
+                    <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px;color:var(--text-soft);">Email (opcional, solo para identificar)</label>
+                    <input type="email" name="email_invitado" placeholder="recepcion@suclinica.com" class="input">
+                </div>
+                <div>
+                    <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px;color:var(--text-soft);">Rol</label>
+                    <select name="rol" class="input">
+                        <option value="staff">Staff (solo lectura+responder)</option>
+                        <option value="admin">Admin (puede editar todo)</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">Generar link de invitación</button>
+            </div>
+            <p style="font-size:12px;color:var(--text-soft);margin-top:10px;">
+                💡 Al generar la invitación obtendrás un link único. Compártelo por WhatsApp o email con la persona. El link es válido 7 días y solo se puede usar una vez.
+            </p>
+        </form>'''
+    else:
+        if plan_nombre == "free":
+            form_invitar = f'''<div style="background:linear-gradient(135deg,#FFF7ED,#FED7AA);border:1px solid #F97316;color:#9A3412;padding:18px;border-radius:14px;margin-bottom:20px;">
+                <strong style="font-size:15px;display:block;margin-bottom:6px;">🚀 Sube a Pro para invitar tu equipo</strong>
+                <p style="font-size:13px;">Tu plan Free solo permite 1 usuario. Con <strong>Pro ($100 USD/mes)</strong> puedes tener hasta 5 usuarios y activar IA SofIA.</p>
+            </div>'''
+        elif plan_nombre == "pro":
+            form_invitar = f'''<div style="background:linear-gradient(135deg,#EFF6FF,#DBEAFE);border:1px solid #3B82F6;color:#1E40AF;padding:18px;border-radius:14px;margin-bottom:20px;">
+                <strong style="font-size:15px;display:block;margin-bottom:6px;">⭐ Sube a Studio para usuarios ilimitados</strong>
+                <p style="font-size:13px;">Tu plan Pro permite 5 usuarios. Con <strong>Studio ($250 USD/mes)</strong> tienes usuarios ilimitados, white-label total y API custom.</p>
+            </div>'''
+        else:
+            form_invitar = '<div style="background:#F3F4F6;border:1px solid #E5E7EB;color:#374151;padding:14px;border-radius:10px;margin-bottom:20px;font-size:14px;">Ya alcanzaste el límite de usuarios de tu plan.</div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Equipo - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("usuarios", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:24px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">Equipo</h1>
+          <p style="color:var(--text-soft);">{actuales} de {limite if limite < 9999 else '∞'} usuarios usados · plan <strong style="text-transform:capitalize;color:var(--color-primary);">{plan_nombre}</strong></p>
+        </div>
+        <a href="#" style="font-size:13px;color:var(--text-soft);text-decoration:underline;">Ver planes</a>
+      </div>
+
+      {banner}
+      {form_invitar}
+
+      <div style="background:white;border:1px solid var(--border);border-radius:14px;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;">
+          <thead style="background:#F9FAFB;">
+            <tr>
+              <th style="text-align:left;padding:12px 16px;font-size:12px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.05em;">Nombre</th>
+              <th style="text-align:left;padding:12px 16px;font-size:12px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.05em;">Email</th>
+              <th style="text-align:left;padding:12px 16px;font-size:12px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.05em;">Rol</th>
+              <th style="text-align:left;padding:12px 16px;font-size:12px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.05em;">Último login</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>{filas_usuarios}{filas_inv}</tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/usuarios/invitar", response_class=HTMLResponse)
+async def crear_invitacion_usuario(
+    email_invitado: str = Form(""),
+    rol: str = Form("staff"),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    puede, motivo = await puede_invitar_usuario(clinica)
+    if not puede:
+        return RedirectResponse(
+            f"/clinic/app/usuarios?error={html.escape(motivo[:120])}",
+            status_code=303,
+        )
+
+    inv = await crear_invitacion(
+        clinica_id=clinica.id,
+        invitado_por_id=sesion["usuario_id"],
+        email_invitado=email_invitado.strip(),
+        rol=rol if rol in ("admin", "staff") else "staff",
+        dias_validez=7,
+    )
+    return RedirectResponse(f"/clinic/app/usuarios?invitado={inv.token}", status_code=303)
+
+
+@router.post("/app/usuarios/{usuario_id}/eliminar", response_class=HTMLResponse)
+async def eliminar_usuario(usuario_id: int, clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    if usuario_id == sesion["usuario_id"]:
+        return RedirectResponse(
+            "/clinic/app/usuarios?error=No+puedes+eliminarte+a+ti+mismo",
+            status_code=303,
+        )
+
+    async with async_session() as session:
+        u = (await session.execute(
+            select(UsuarioClinic)
+            .where(UsuarioClinic.id == usuario_id)
+            .where(UsuarioClinic.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if u:
+            u.activo = False  # Soft delete para auditoría
+            await session.commit()
+
+    return RedirectResponse("/clinic/app/usuarios?eliminado=1", status_code=303)
+
+
+@router.post("/app/usuarios/invitacion/{inv_id}/cancelar", response_class=HTMLResponse)
+async def cancelar_invitacion(inv_id: int, clinic_session: Optional[str] = Cookie(None)):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    async with async_session() as session:
+        inv = (await session.execute(
+            select(InvitacionUsuario)
+            .where(InvitacionUsuario.id == inv_id)
+            .where(InvitacionUsuario.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if inv:
+            # Marcar como expirada inmediatamente
+            inv.expira_en = datetime.utcnow()
+            await session.commit()
+    return RedirectResponse("/clinic/app/usuarios?eliminado=1", status_code=303)
+
+
+# ──── Aceptación de invitación (público — el invitado entra sin sesión) ────
+
+@router.get("/aceptar-invitacion/{token}", response_class=HTMLResponse)
+async def vista_aceptar_invitacion(token: str, error: Optional[str] = None):
+    """Página pública donde el invitado pone nombre + password."""
+    async with async_session() as session:
+        inv = (await session.execute(
+            select(InvitacionUsuario).where(InvitacionUsuario.token == token)
+        )).scalar_one_or_none()
+
+        clinica = None
+        if inv and not inv.usada and inv.expira_en > datetime.utcnow():
+            clinica = (await session.execute(
+                select(Clinica).where(Clinica.id == inv.clinica_id)
+            )).scalar_one_or_none()
+
+    def esc(s): return html.escape(s or "", quote=True)
+
+    if not inv or inv.usada or inv.expira_en < datetime.utcnow() or not clinica:
+        razon = "no encontrada"
+        if inv and inv.usada:
+            razon = "ya fue usada"
+        elif inv and inv.expira_en < datetime.utcnow():
+            razon = "ha expirado"
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Invitación inválida - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body style="background:#F9FAFB;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+    <div style="max-width:480px;background:white;border:1px solid var(--border);border-radius:14px;padding:32px;text-align:center;">
+        <div style="font-size:48px;margin-bottom:12px;">⚠</div>
+        <h1 style="font-size:22px;font-weight:800;margin-bottom:8px;">Invitación {razon}</h1>
+        <p style="color:var(--text-soft);margin-bottom:20px;">Pide al admin de la clínica que te genere una nueva invitación.</p>
+        <a href="/clinic/login" class="btn btn-primary">Ir a login</a>
+    </div>
+</body></html>""", status_code=410 if inv else 404)
+
+    banner_err = f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px;border-radius:8px;margin-bottom:16px;font-size:14px;">⚠ {esc(error)}</div>' if error else ""
+    email_default = esc(inv.email_invitado) if inv.email_invitado else ""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Aceptar invitación - {esc(clinica.nombre)}</title>{CSS_CLINIC}</head>
+<body style="background:#F9FAFB;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;">
+    <div style="max-width:440px;width:100%;background:white;border:1px solid var(--border);border-radius:14px;padding:32px;">
+        <div style="text-align:center;margin-bottom:24px;">
+            <div style="font-size:40px;margin-bottom:8px;">👥</div>
+            <h1 style="font-size:22px;font-weight:800;margin-bottom:6px;">Únete al equipo de</h1>
+            <p style="color:var(--color-primary);font-size:20px;font-weight:700;">{esc(clinica.nombre)}</p>
+            <p style="color:var(--text-soft);font-size:14px;margin-top:8px;">Vas a entrar como <strong style="text-transform:capitalize;">{esc(inv.rol)}</strong></p>
+        </div>
+        {banner_err}
+        <form method="post" action="/clinic/aceptar-invitacion/{esc(token)}" style="display:flex;flex-direction:column;gap:14px;">
+            <div>
+                <label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px;">Tu nombre</label>
+                <input type="text" name="nombre" required class="input" placeholder="María Pérez">
+            </div>
+            <div>
+                <label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px;">Email (será tu login)</label>
+                <input type="email" name="email" required class="input" value="{email_default}" placeholder="tu@email.com">
+            </div>
+            <div>
+                <label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px;">Contraseña (mín 6 caracteres)</label>
+                <input type="password" name="password" required minlength="6" class="input" placeholder="••••••••">
+            </div>
+            <button type="submit" class="btn btn-primary" style="margin-top:8px;">Crear mi cuenta</button>
+        </form>
+    </div>
+</body></html>""")
+
+
+@router.post("/aceptar-invitacion/{token}", response_class=HTMLResponse)
+async def aceptar_invitacion(
+    token: str,
+    nombre: str = Form(""),
+    email: str = Form(""),
+    password: str = Form(""),
+):
+    usuario, error = await consumir_invitacion(token, nombre, email, password)
+    if not usuario or error:
+        return RedirectResponse(
+            f"/clinic/aceptar-invitacion/{token}?error={html.escape(error or 'Error desconocido')}",
+            status_code=303,
+        )
+    # Login automático: crear sesión y redirigir al dashboard
+    cookie_token = secrets.token_urlsafe(32)
+    SESSIONS[cookie_token] = {
+        "usuario_id": usuario.id,
+        "clinica_id": usuario.clinica_id,
+        "nombre": usuario.nombre,
+        "rol": usuario.rol,
+    }
+    resp = RedirectResponse("/clinic/app/?bienvenida=1", status_code=303)
+    resp.set_cookie("clinic_session", cookie_token, max_age=30 * 24 * 3600, httponly=True, samesite="lax")
+    return resp
 
 
 # ════════════════════════════════════════════════════════════
@@ -3105,11 +3428,14 @@ async def webhook_whatsapp_verify(slug: str, request: Request):
 
 @router.post("/webhook/whatsapp/{slug}")
 async def webhook_whatsapp_recibir(slug: str, request: Request):
-    """Recibe mensajes WhatsApp y los guarda en el inbox de la clínica."""
+    """Recibe mensajes WhatsApp, los guarda en el inbox, y responde con IA SofIA si está activa."""
     try:
         payload = await request.json()
     except Exception:
         return {"status": "ignored"}
+
+    # Lista de tuplas (clinica, paciente, texto) para procesar IA después del commit
+    pendientes_ia = []
 
     async with async_session() as session:
         clinica = (await session.execute(
@@ -3163,8 +3489,53 @@ async def webhook_whatsapp_recibir(slug: str, request: Request):
                     paciente.ultimo_contacto = ts
                     paciente.total_mensajes = (paciente.total_mensajes or 0) + 1
 
+                    # Encolar para IA si está activa (procesa después del commit)
+                    if clinica.ia_activa and not clinica.congelada:
+                        pendientes_ia.append((clinica.id, paciente.id, texto))
+
         await session.commit()
+
+    # Procesar IA SofIA per-tenant DESPUÉS del commit
+    # (en background para no bloquear el ACK del webhook a Meta)
+    if pendientes_ia:
+        import asyncio
+        asyncio.create_task(_procesar_ia_background(pendientes_ia))
+
     return {"status": "ok"}
+
+
+async def _procesar_ia_background(pendientes: list[tuple[int, int, str]]):
+    """Procesa los mensajes con IA SofIA en background.
+
+    Se llama después del commit del webhook para que Meta reciba el ACK rápido.
+    Cualquier excepción aquí se loguea pero NO afecta al webhook.
+    """
+    try:
+        from agent.clinic_brain import procesar_mensaje_entrante
+    except ImportError as e:
+        logger.error(f"[IA background] No se pudo importar clinic_brain: {e}")
+        return
+
+    for clinica_id, paciente_id, texto in pendientes:
+        try:
+            async with async_session() as session:
+                clinica = (await session.execute(
+                    select(Clinica).where(Clinica.id == clinica_id)
+                )).scalar_one_or_none()
+                paciente = (await session.execute(
+                    select(Paciente).where(Paciente.id == paciente_id)
+                )).scalar_one_or_none()
+
+            if not clinica or not paciente:
+                continue
+
+            resultado = await procesar_mensaje_entrante(clinica, paciente, texto)
+            logger.info(
+                f"[IA background] clinica={clinica_id} paciente={paciente_id} "
+                f"accion={resultado.get('accion')} enviada={resultado.get('respuesta_enviada')}"
+            )
+        except Exception as e:
+            logger.error(f"[IA background] Error procesando clinica={clinica_id}: {e}", exc_info=True)
 
 
 # ════════════════════════════════════════════════════════════
