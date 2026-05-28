@@ -20,6 +20,7 @@ from agent.providers import obtener_proveedor
 from agent.dashboard import router as dashboard_router
 from agent.clinic import router as clinic_router
 from agent.lapora_bot import router as lapora_bot_router
+from agent.voice_bot import router as voice_bot_router
 from agent.reminders import scheduler_loop
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -123,6 +124,8 @@ app.include_router(dashboard_router)
 app.include_router(clinic_router)
 # Lapora Bot widget API en /lapora-bot/chat
 app.include_router(lapora_bot_router)
+# Lapora Voice Bot (calling) en /voice/
+app.include_router(voice_bot_router)
 
 
 @app.get("/")
