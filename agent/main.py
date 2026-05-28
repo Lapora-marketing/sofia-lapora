@@ -64,6 +64,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Workers Clinic no se pudieron iniciar (no crítico): {e}")
 
+    # Iniciar Voice Bot scheduler (calling automatizado)
+    voice_workers_iniciados = False
+    try:
+        from agent.voice_workers import iniciar_voice_workers
+        await iniciar_voice_workers()
+        voice_workers_iniciados = True
+    except Exception as e:
+        logger.warning(f"Voice workers no se pudieron iniciar (no crítico): {e}")
+
     logger.info("=" * 60)
     logger.info("  SofIA — Agente de Lapora arrancando...")
     logger.info("=" * 60)
@@ -73,6 +82,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Entorno: {ENVIRONMENT}")
     logger.info(f"  Scheduler SofIA CRM: ACTIVO (revisa cada 5 min)")
     logger.info(f"  Workers Lapora Clinic: {'ACTIVOS' if workers_clinic_iniciados else 'OFF'}")
+    logger.info(f"  Voice Bot scheduler: {'ACTIVO (Lun-Vie 9-12+14-17 CO)' if voice_workers_iniciados else 'OFF'}")
     logger.info("=" * 60)
     yield
 
@@ -90,6 +100,14 @@ async def lifespan(app: FastAPI):
             await detener_workers_clinic()
         except Exception as e:
             logger.warning(f"Error deteniendo workers Clinic: {e}")
+
+    # Apagar Voice workers limpiamente
+    if voice_workers_iniciados:
+        try:
+            from agent.voice_workers import detener_voice_workers
+            await detener_voice_workers()
+        except Exception as e:
+            logger.warning(f"Error deteniendo voice workers: {e}")
 
     logger.info("SofIA: servidor apagandose.")
 
