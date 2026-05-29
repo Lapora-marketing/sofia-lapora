@@ -284,28 +284,50 @@ async def _iniciar_twilio_call(call: VoiceCall) -> bool:
         logger.info(f"[voice_workers] call={call.id} MOCK MODE — simulación en background")
         return True
 
-    sid = os.getenv("TWILIO_ACCOUNT_SID")
-    token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_num = os.getenv("TWILIO_VOICE_NUMBER")
+    # Día 2 REAL — Twilio outbound call vía REST API
+    from agent.voice_telephony import twilio_iniciar_call, creds_twilio
 
+    sid, token, from_num = creds_twilio()
     if not (sid and token and from_num):
+        logger.warning(f"[voice_workers] Twilio creds faltantes, call={call.id} no se inicia")
         return False
 
-    # Día 2: aquí va el código real:
-    # from twilio.rest import Client
-    # client = Client(sid, token)
-    # base_url = os.getenv("PUBLIC_BASE_URL", "https://sofia-lapora-production.up.railway.app")
-    # twilio_call = client.calls.create(
-    #     to=call.telefono, from_=from_num,
-    #     url=f"{base_url}/voice/twilio/answer?call_id={call.id}",
-    #     status_callback=f"{base_url}/voice/twilio/status",
-    #     status_callback_event=['initiated','ringing','answered','completed'],
-    #     timeout=20, machine_detection='Enable',
-    # )
-    # call.twilio_call_sid = twilio_call.sid
+    resultado = await twilio_iniciar_call(
+        to_number=call.telefono,
+        call_id=call.id,
+        timeout_seg=20,
+    )
 
-    logger.info(f"[voice_workers] Twilio creds OK, faltan endpoints reales (Día 2)")
-    return False
+    if not resultado["exito"]:
+        logger.error(f"[voice_workers] Twilio init falló call={call.id}: {resultado['error']}")
+        async with async_session() as session:
+            c = (await session.execute(
+                select(VoiceCall).where(VoiceCall.id == call.id)
+            )).scalar_one_or_none()
+            if c:
+                c.estado = "failed"
+                c.outcome = "failed"
+                c.error_msg = resultado["error"][:500]
+                c.fin = datetime.utcnow()
+                await session.commit()
+        return False
+
+    # Guardar el Twilio CallSid para correlacionar con callbacks
+    async with async_session() as session:
+        c = (await session.execute(
+            select(VoiceCall).where(VoiceCall.id == call.id)
+        )).scalar_one_or_none()
+        if c:
+            c.twilio_call_sid = resultado["twilio_call_sid"]
+            c.estado = "in_progress"
+            c.inicio = datetime.utcnow()
+            await session.commit()
+
+    logger.info(
+        f"[voice_workers] Twilio call iniciada call={call.id} "
+        f"sid={resultado['twilio_call_sid']} → {call.telefono}"
+    )
+    return True
 
 
 async def _mock_call_background(call: VoiceCall):

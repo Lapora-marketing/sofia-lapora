@@ -12,3 +12,7 @@ google-api-python-client>=2.140.0
 google-auth>=2.34.0
 google-auth-httplib2>=0.2.0
 pytz>=2024.1
+# Voice Bot Day 2 — telefonía real
+twilio>=9.3.0
+deepgram-sdk>=3.7.0
+websockets>=12.0

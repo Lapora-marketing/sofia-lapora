@@ -98,26 +98,45 @@ async def health():
 # ════════════════════════════════════════════════════════════
 
 @router.post("/twilio/answer")
-async def twilio_answer(request: Request):
-    """Cuando Twilio responde la llamada, devuelve TwiML que abre Media Stream.
+async def twilio_answer(request: Request, call_id: Optional[int] = None):
+    """Cuando Twilio contesta, devuelve TwiML que abre el Media Stream WebSocket.
 
-    Día 2+: TwiML real con <Connect><Stream> apuntando a /voice/twilio/stream/{call_id}
-    Día 1: TwiML stub que dice "Hola, soy SofIA. Sistema en construcción." y cuelga.
+    El call_id viene como query param (set por twilio_iniciar_call).
+    Si las credenciales de Deepgram + ElevenLabs faltan, fallback a Polly de Twilio.
     """
     form = await request.form()
     call_sid = form.get("CallSid", "")
     to_number = form.get("To", "")
-    logger.info(f"[voice] Twilio answer: SID={call_sid} to={to_number}")
+    logger.info(f"[voice] Twilio answer: SID={call_sid} to={to_number} call_id={call_id}")
 
-    # TwiML stub (Día 1) — voz de Twilio, sin streaming aún
-    twiml = """<?xml version="1.0" encoding="UTF-8"?>
+    # Verificar que tenemos las credenciales necesarias para streaming
+    from agent.voice_telephony import creds_deepgram, creds_elevenlabs, twiml_para_stream
+
+    dg_key = creds_deepgram()
+    el_key, _ = creds_elevenlabs()
+
+    if call_id is not None and dg_key and el_key:
+        # Stream real con Deepgram + ElevenLabs
+        twiml = twiml_para_stream(int(call_id))
+    else:
+        # Fallback: voz Polly de Twilio (peor calidad pero funciona)
+        razones = []
+        if call_id is None:
+            razones.append("call_id missing")
+        if not dg_key:
+            razones.append("Deepgram key missing")
+        if not el_key:
+            razones.append("ElevenLabs key missing")
+        logger.warning(f"[voice] usando fallback Polly — {', '.join(razones)}")
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Lupe-Neural" language="es-MX">
-    Hola, soy SofIA, asistente virtual de Lapora.
-    El sistema de llamadas está en construcción. Pronto te llamamos de verdad.
+    Hola, le habla SofIA de Lapora. El sistema de voz est&#225; en configuraci&#243;n.
+    Le contactamos por WhatsApp en un momento. Que tenga buen d&#237;a.
   </Say>
   <Hangup/>
 </Response>"""
+
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -188,35 +207,205 @@ async def _post_call_background(call_id: int):
 
 @router.websocket("/twilio/stream/{call_id}")
 async def twilio_stream(websocket: WebSocket, call_id: int):
-    """Media Streams: Twilio nos envía audio del prospecto en vivo, y nosotros
-    le mandamos respuesta de Claude (vía TTS) de vuelta.
+    """Media Streams bidireccional Twilio ↔ Deepgram STT ↔ Claude ↔ ElevenLabs TTS.
 
-    Día 1: skeleton WebSocket que solo registra el inicio y cierra.
-    Día 2+: integración Deepgram STT + Claude + ElevenLabs TTS streaming.
+    Audio: μ-law 8kHz mono (formato nativo de Twilio).
+    No hay conversión — Deepgram y ElevenLabs aceptan/entregan ese formato.
+
+    Flow:
+    1. Twilio se conecta y manda evento 'start' con streamSid
+    2. Nosotros conectamos Deepgram WebSocket en paralelo
+    3. Por cada chunk de audio de Twilio → forward a Deepgram
+    4. Cuando Deepgram detecta fin de turno (speech_final=true):
+       → llamar voice_brain.generar_turno() con el transcript
+       → mandar respuesta a ElevenLabs → audio μ-law → Twilio
+    5. Si brain dice end_call=true → mandar <Stop/> y cerrar
     """
     await websocket.accept()
-    logger.info(f"[voice WS] Stream abierto para call_id={call_id}")
+    logger.info(f"[voice WS] Stream abierto call_id={call_id}")
 
+    # Cargar la llamada
+    from agent.voice_telephony import (
+        DeepgramStreamSTT, ElevenLabsStreamTTS, ConversacionTelefonica,
+    )
+    from agent.voice_brain import generar_turno
+    from agent.voice_models import registrar_optout
+
+    async with async_session() as session:
+        call = (await session.execute(
+            select(VoiceCall).where(VoiceCall.id == call_id)
+        )).scalar_one_or_none()
+
+    if not call:
+        logger.error(f"[voice WS] VoiceCall id={call_id} no encontrada")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        return
+
+    conv = ConversacionTelefonica(call)
+    dg = DeepgramStreamSTT()
+    tts = ElevenLabsStreamTTS()
+
+    # === Conectar Deepgram ===
+    if not await dg.conectar():
+        logger.error(f"[voice WS] no se pudo conectar Deepgram, cerrando call_id={call_id}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        return
+
+    # === Helpers para enviar audio TTS de vuelta a Twilio ===
+    async def enviar_audio_a_twilio(audio_chunk: bytes):
+        """Manda un chunk de audio μ-law a Twilio en el formato Media Streams."""
+        if not conv.stream_sid:
+            return
+        payload = base64.b64encode(audio_chunk).decode("ascii")
+        msg = {
+            "event": "media",
+            "streamSid": conv.stream_sid,
+            "media": {"payload": payload},
+        }
+        try:
+            await websocket.send_text(json.dumps(msg))
+        except Exception as e:
+            logger.warning(f"[voice WS] send a Twilio falló: {e}")
+
+    async def hablar(texto: str):
+        """Sintetiza texto con ElevenLabs y manda los chunks a Twilio."""
+        async for chunk in tts.sintetizar(texto):
+            if not chunk:
+                continue
+            # Dividir en frames pequeños (~160 bytes = 20ms a 8kHz μ-law)
+            for i in range(0, len(chunk), 160):
+                frame = chunk[i:i + 160]
+                if frame:
+                    await enviar_audio_a_twilio(frame)
+                    await asyncio.sleep(0.018)  # marco temporal de 20ms
+
+    async def procesar_turno_brain(transcript_persona: str, primer_turno: bool = False):
+        """Llama al brain y emite la respuesta como voz."""
+        resp = await generar_turno(
+            script_id=call.script_id or "outreach_medicos",
+            variables=conv.variables_brain(),
+            historial=conv.historial,
+            transcript_usuario=transcript_persona,
+            primer_turno=primer_turno,
+            telefono_target=call.telefono,
+            clinica_id=call.clinica_id,
+        )
+
+        # Actualizar historial
+        if transcript_persona and not primer_turno:
+            conv.historial.append({"role": "user", "content": transcript_persona})
+        conv.historial.append({"role": "assistant", "content": resp.respuesta})
+        conv.turnos_bot_count += 1
+
+        # Hablar
+        if resp.respuesta:
+            await hablar(resp.respuesta)
+
+        # Flags terminales
+        if resp.optout:
+            await registrar_optout(call.telefono, motivo="Pedido en llamada de voz", origen="voice")
+
+        if resp.end_call:
+            # Actualizar VoiceCall y cerrar el stream
+            async with async_session() as session:
+                c = (await session.execute(
+                    select(VoiceCall).where(VoiceCall.id == call_id)
+                )).scalar_one_or_none()
+                if c:
+                    c.outcome = resp.outcome or "completed"
+                    c.estado = "completed"
+                    c.fin = datetime.utcnow()
+                    c.transcript_completo = "\n".join(
+                        f"{'SofIA' if m['role']=='assistant' else 'Persona'}: {m['content']}"
+                        for m in conv.historial
+                    )
+                    await session.commit()
+            conv.terminada = True
+
+        return resp
+
+    # === Tarea: leer transcripts de Deepgram y disparar el brain ===
+    async def loop_transcripts():
+        try:
+            async for t in dg.recibir_transcripts():
+                if conv.terminada:
+                    break
+                texto = t["transcript"]
+                if t.get("is_final"):
+                    conv.transcript_actual += " " + texto
+                    if t.get("speech_final"):
+                        # Fin del turno → procesar
+                        transcript_completo_turno = conv.transcript_actual.strip()
+                        conv.transcript_actual = ""
+                        if transcript_completo_turno:
+                            conv.tcps += 1
+                            await procesar_turno_brain(transcript_completo_turno)
+        except Exception as e:
+            logger.error(f"[voice WS] loop transcripts error: {e}", exc_info=True)
+
+    transcripts_task = asyncio.create_task(loop_transcripts())
+
+    # === Loop principal: leer frames de Twilio Media Streams ===
     try:
-        # Loop principal: recibe frames de Twilio (base64 audio + eventos)
-        while True:
-            msg = await websocket.receive_text()
-            # Día 2+: procesar audio y responder
-            # Por ahora solo logueamos eventos para debug
-            if '"event":"start"' in msg:
-                logger.info(f"[voice WS] Stream START call_id={call_id}")
-            elif '"event":"stop"' in msg:
+        while not conv.terminada:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            event = data.get("event")
+
+            if event == "connected":
+                logger.info(f"[voice WS] Twilio connected call_id={call_id}")
+
+            elif event == "start":
+                start = data.get("start", {})
+                conv.stream_sid = start.get("streamSid", "")
+                logger.info(f"[voice WS] Stream START sid={conv.stream_sid} call_id={call_id}")
+                # Disparar primer turno (la apertura) en background
+                asyncio.create_task(procesar_turno_brain("", primer_turno=True))
+
+            elif event == "media":
+                # Audio entrante μ-law 8kHz base64
+                payload = data.get("media", {}).get("payload", "")
+                if payload:
+                    try:
+                        audio = base64.b64decode(payload)
+                        await dg.enviar_audio(audio)
+                    except Exception:
+                        pass
+
+            elif event == "stop":
                 logger.info(f"[voice WS] Stream STOP call_id={call_id}")
                 break
+
     except WebSocketDisconnect:
         logger.info(f"[voice WS] Disconnect call_id={call_id}")
     except Exception as e:
         logger.error(f"[voice WS] Error: {e}", exc_info=True)
     finally:
+        conv.terminada = True
+        transcripts_task.cancel()
+        await dg.cerrar()
         try:
             await websocket.close()
         except Exception:
             pass
+
+        # Disparar post-call analysis
+        try:
+            from agent.voice_outcomes import procesar_post_call
+            asyncio.create_task(procesar_post_call(call_id))
+        except Exception:
+            pass
+
+        logger.info(f"[voice WS] call_id={call_id} cerrada (turnos_bot={conv.turnos_bot_count})")
 
 
 # ════════════════════════════════════════════════════════════
