@@ -5295,7 +5295,11 @@ def verificar_superadmin(credentials: HTTPBasicCredentials = Depends(_superadmin
 
 
 @router.get("/superadmin", response_class=HTMLResponse)
-async def superadmin_dashboard(user: str = Depends(verificar_superadmin)):
+async def superadmin_dashboard(
+    plan_cambiado: Optional[int] = None,
+    nuevo_plan: Optional[str] = None,
+    user: str = Depends(verificar_superadmin),
+):
     """Lista TODAS las clínicas con stats — solo cuenta maestra Lapora."""
     async with async_session() as session:
         clinicas = list((await session.execute(
@@ -5343,7 +5347,13 @@ async def superadmin_dashboard(user: str = Depends(verificar_superadmin)):
           </td>
           <td style="padding:14px;">{estado_badge}</td>
           <td style="padding:14px;">
-            <span style="background:{plan_color}20;color:{plan_color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;">{c.plan}</span>
+            <form method="post" action="/clinic/superadmin/clinicas/{c.id}/plan-inline" style="margin:0;display:flex;gap:4px;align-items:center;">
+              <select name="plan" onchange="this.form.submit()" style="background:{plan_color}20;color:{plan_color};border:1px solid {plan_color}55;padding:5px 8px;border-radius:8px;font-size:11px;font-weight:700;text-transform:uppercase;cursor:pointer;font-family:inherit;">
+                <option value="free" {'selected' if c.plan == 'free' else ''}>FREE</option>
+                <option value="pro" {'selected' if c.plan == 'pro' else ''}>PRO · $100</option>
+                <option value="studio" {'selected' if c.plan == 'studio' else ''}>STUDIO · $250</option>
+              </select>
+            </form>
           </td>
           <td style="padding:14px;text-align:center;font-weight:600;">{s['pacientes']}</td>
           <td style="padding:14px;text-align:center;color:var(--text-soft);">{s['mensajes']}</td>
@@ -5388,6 +5398,8 @@ async def superadmin_dashboard(user: str = Depends(verificar_superadmin)):
       </div>
     </div>
   </div>
+
+  {('<div style="margin:18px 40px 0;padding:14px 18px;background:rgba(16,185,129,0.12);border:1px solid #10B981;border-radius:10px;color:#A7F3D0;font-weight:600;font-size:14px;">✓ Plan actualizado a <strong style="text-transform:uppercase;">' + html.escape(nuevo_plan or "") + '</strong> para clínica #' + str(plan_cambiado) + ' — USD/mes recalculado automáticamente.</div>' if plan_cambiado else '')}
 
   <div class="sa-stats">
     <div class="sa-stat">
@@ -5590,6 +5602,45 @@ async def superadmin_cambiar_plan(
             c.monto_mensual_usd = monto_usd
             await session.commit()
     return RedirectResponse(f"/clinic/superadmin/clinicas/{clinica_id}", status_code=303)
+
+
+# Precios estándar por plan (USD/mes)
+PRECIOS_POR_PLAN = {
+    "free":   0,
+    "pro":    100,
+    "studio": 250,
+}
+
+
+@router.post("/superadmin/clinicas/{clinica_id}/plan-inline")
+async def superadmin_cambiar_plan_inline(
+    clinica_id: int,
+    plan: str = Form(...),
+    user: str = Depends(verificar_superadmin),
+):
+    """Cambio rápido de plan desde el dashboard. Auto-calcula el monto."""
+    plan = (plan or "").lower().strip()
+    if plan not in PRECIOS_POR_PLAN:
+        return RedirectResponse("/clinic/superadmin?error=plan_invalido", status_code=303)
+
+    async with async_session() as session:
+        c = (await session.execute(
+            select(Clinica).where(Clinica.id == clinica_id)
+        )).scalar_one_or_none()
+        if c:
+            plan_anterior = c.plan
+            c.plan = plan
+            c.monto_mensual_usd = PRECIOS_POR_PLAN[plan]
+            c.actualizado_en = datetime.utcnow()
+            await session.commit()
+            logger.info(
+                f"[superadmin] clinica={clinica_id} ({c.nombre}) plan {plan_anterior} → {plan} "
+                f"USD/mes={PRECIOS_POR_PLAN[plan]}"
+            )
+    return RedirectResponse(
+        f"/clinic/superadmin?plan_cambiado={clinica_id}&nuevo_plan={plan}",
+        status_code=303,
+    )
 
 
 # ════════════════════════════════════════════════════════════
