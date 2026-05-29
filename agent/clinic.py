@@ -52,6 +52,7 @@ from agent.memory import async_session
 from agent.clinic_models import (
     Clinica, UsuarioClinic, Paciente, MensajeUnificado,
     Llamada, CitaClinic, PlantillaRespuesta, InvitacionUsuario, ApiKey,
+    Cuestionario, RespuestaCuestionario, FotoTratamiento,
     crear_clinica, autenticar_usuario, obtener_clinica,
     cargar_demo_data, hash_password,
     limite_usuarios, contar_usuarios_clinica,
@@ -1024,6 +1025,7 @@ def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
         ("citas",     "Citas",      "/clinic/app/citas",       "M3 4h18v2H3z M3 10h18v10H3z"),
         ("llamadas",  "Llamadas",   "/clinic/app/llamadas",    "M22 16.92v3a2 2 0 0 1-2.18 2A19.79 19.79 0 0 1 2 5.18 2 2 0 0 1 4 3h3"),
         ("plantillas","Plantillas", "/clinic/app/plantillas",  "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"),
+        ("referidos","🎁 Referidos", "/clinic/app/referidos", "M20 8v6 M23 11h-6 M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M1 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2"),
         ("analytics", "⭐ Analytics avanzado", "/clinic/app/analytics", "M3 3v18h18 M9 17V9 M15 17V5 M21 17v-3"),
         ("pacientes-riesgo", "⭐ Pacientes en riesgo", "/clinic/app/pacientes-riesgo", "M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"),
         ("api", "⭐ API REST", "/clinic/app/api", "M16 18l6-6-6-6 M8 6l-6 6 6 6"),
@@ -4649,6 +4651,449 @@ Restore: contactar a soporte@lapora.studio para asistencia.
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ════════════════════════════════════════════════════════════
+# 10.11) PROGRAMA DE REFERIDOS — PHVA H5
+# ════════════════════════════════════════════════════════════
+
+@router.get("/r/{slug}/{codigo}", response_class=HTMLResponse)
+async def referido_landing(slug: str, codigo: str):
+    """Landing público que recibe referidos. El paciente nuevo se registra
+    aquí y queda vinculado al código del paciente que lo refirió."""
+    async with async_session() as session:
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.slug == slug)
+        )).scalar_one_or_none()
+        if not clinica:
+            return HTMLResponse("<h1>Clínica no encontrada</h1>", status_code=404)
+
+        referidor = (await session.execute(
+            select(Paciente)
+            .where(Paciente.clinica_id == clinica.id)
+            .where(Paciente.codigo_referido == codigo)
+        )).scalar_one_or_none()
+
+    if not referidor:
+        return HTMLResponse("<h1>Código inválido</h1>", status_code=404)
+
+    referidor_nombre = (referidor.nombre or "").split()[0] if referidor.nombre else ""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Te invitan a {esc(clinica.nombre)}</title>{CSS_CLINIC}</head>
+<body style="background:linear-gradient(135deg,#FFE4E1,#FFF);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;">
+<div style="max-width:560px;background:white;border-radius:18px;padding:40px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,0.1);">
+    <div style="font-size:60px;margin-bottom:14px;">🎁</div>
+    <h1 style="font-size:26px;font-weight:800;margin-bottom:8px;color:#FF3B30;">¡{esc(referidor_nombre)} te recomendó!</h1>
+    <p style="color:#374151;font-size:16px;line-height:1.6;margin-bottom:24px;">Te invitamos a probar <strong>{esc(clinica.nombre)}</strong> con un beneficio especial por ser referido.</p>
+
+    <form method="post" action="/clinic/r/{slug}/{esc(codigo)}/registrar" style="display:flex;flex-direction:column;gap:12px;text-align:left;">
+        <input type="text" name="nombre" required placeholder="Tu nombre completo" style="padding:14px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;">
+        <input type="tel" name="telefono" required placeholder="WhatsApp +57..." style="padding:14px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;">
+        <input type="email" name="email" placeholder="Email (opcional)" style="padding:14px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;">
+        <button type="submit" style="background:#FF3B30;color:white;border:none;padding:14px;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer;">Quiero mi beneficio →</button>
+    </form>
+
+    <p style="color:#9CA3AF;font-size:11px;margin-top:18px;">El equipo de {esc(clinica.nombre)} te contactará para coordinar.</p>
+</div></body></html>""")
+
+
+@router.post("/r/{slug}/{codigo}/registrar")
+async def referido_registrar(
+    slug: str,
+    codigo: str,
+    nombre: str = Form(...),
+    telefono: str = Form(...),
+    email: str = Form(""),
+):
+    """Crea el paciente nuevo + lo vincula al referidor."""
+    async with async_session() as session:
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.slug == slug)
+        )).scalar_one_or_none()
+        if not clinica:
+            return RedirectResponse("/", status_code=303)
+
+        referidor = (await session.execute(
+            select(Paciente)
+            .where(Paciente.clinica_id == clinica.id)
+            .where(Paciente.codigo_referido == codigo)
+        )).scalar_one_or_none()
+        if not referidor:
+            return RedirectResponse("/", status_code=303)
+
+        # Crear paciente nuevo vinculado al referidor
+        nuevo = Paciente(
+            clinica_id=clinica.id,
+            nombre=nombre.strip()[:200],
+            telefono=telefono.strip()[:50],
+            email=email.strip().lower()[:200],
+            fuente="referido",
+            estado="nuevo",
+            referido_por_id=referidor.id,
+            primer_contacto=datetime.utcnow(),
+            ultimo_contacto=datetime.utcnow(),
+        )
+        session.add(nuevo)
+        await session.commit()
+
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>¡Gracias!</title>{CSS_CLINIC}</head>
+<body style="background:linear-gradient(135deg,#D1FAE5,#FFF);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;">
+<div style="max-width:520px;background:white;border-radius:18px;padding:40px;text-align:center;">
+    <div style="font-size:60px;margin-bottom:14px;">✓</div>
+    <h1 style="font-size:24px;font-weight:800;margin-bottom:10px;color:#065F46;">¡Listo, {esc(nombre.split()[0])}!</h1>
+    <p style="color:#374151;font-size:15px;line-height:1.6;">Recibimos tu información. El equipo de <strong>{esc(clinica.nombre)}</strong> te contactará en breve por WhatsApp para coordinar tu beneficio.</p>
+</div></body></html>""")
+
+
+@router.get("/app/referidos", response_class=HTMLResponse)
+async def vista_referidos(clinic_session: Optional[str] = Cookie(None)):
+    """Dashboard interno: top referidores + métricas."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    from agent.clinic_engagement import top_referidores
+
+    tops = await top_referidores(clinica.id, limite=20)
+
+    async with async_session() as session:
+        total_refs = (await session.execute(
+            select(func.count(Paciente.id))
+            .where(Paciente.clinica_id == clinica.id)
+            .where(Paciente.referido_por_id.isnot(None))
+        )).scalar() or 0
+        valor_refs = (await session.execute(
+            select(func.sum(Paciente.valor_total))
+            .where(Paciente.clinica_id == clinica.id)
+            .where(Paciente.referido_por_id.isnot(None))
+        )).scalar() or 0
+
+    filas = ""
+    if not tops:
+        filas = '<tr><td colspan="4" style="padding:30px;text-align:center;color:#9CA3AF;">Sin referidos aún. Generá links de referido en cada paciente.</td></tr>'
+    for r in tops:
+        p = r["paciente"]
+        link = f"https://lapora.studio/clinic/r/{esc(clinica.slug)}/{esc(p.codigo_referido)}"
+        filas += f'''
+        <tr>
+            <td style="padding:12px 16px;"><strong>{esc(p.nombre[:40])}</strong><br><span style="font-size:11px;color:#6B7280;">{esc(p.telefono or '')}</span></td>
+            <td style="padding:12px 16px;text-align:center;font-size:22px;font-weight:800;color:#FF3B30;">{r["referidos"]}</td>
+            <td style="padding:12px 16px;text-align:right;font-family:monospace;color:#10B981;font-weight:700;">${r["valor_generado"]:,} COP</td>
+            <td style="padding:12px 16px;text-align:right;"><a href="{link}" target="_blank" style="font-size:11px;color:#3B82F6;text-decoration:underline;">Ver link →</a></td>
+        </tr>'''
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Referidos · Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+<div class="app-wrap">
+    {sidebar_clinic("referidos", sesion, clinica)}
+    <main class="main">
+        <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">🎁 Programa de referidos</h1>
+        <p style="color:#6B7280;margin-bottom:24px;">Quién trae más pacientes a {esc(clinica.nombre)}</p>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:24px;">
+            <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;padding:18px;">
+                <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Total referidos</div>
+                <div style="font-size:30px;font-weight:800;color:#FF3B30;margin-top:4px;">{total_refs}</div>
+            </div>
+            <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;padding:18px;">
+                <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Valor generado</div>
+                <div style="font-size:24px;font-weight:800;color:#10B981;margin-top:4px;">${valor_refs:,} COP</div>
+            </div>
+            <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;padding:18px;">
+                <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Referidores activos</div>
+                <div style="font-size:30px;font-weight:800;color:#8B5CF6;margin-top:4px;">{len(tops)}</div>
+            </div>
+        </div>
+
+        <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;overflow:hidden;">
+            <table style="width:100%;border-collapse:collapse;">
+                <thead style="background:#F9FAFB;">
+                    <tr>
+                        <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Paciente</th>
+                        <th style="text-align:center;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Refs</th>
+                        <th style="text-align:right;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Valor</th>
+                        <th style="text-align:right;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Link</th>
+                    </tr>
+                </thead>
+                <tbody>{filas}</tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:24px;padding:16px;background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;border-radius:10px;font-size:13px;line-height:1.6;">
+            💡 <strong>Cómo funciona:</strong> Cada paciente tiene un código único. Cuando lo compartís y alguien se registra, queda vinculado automáticamente. Generá el link desde la página de detalle de cada paciente.
+        </div>
+    </main>
+</div></body></html>""")
+
+
+@router.post("/app/pacientes/{paciente_id}/generar-codigo-referido")
+async def generar_codigo_paciente(
+    paciente_id: int,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Genera el código de referido si el paciente no tiene."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    from agent.clinic_engagement import asegurar_codigo_referido
+    await asegurar_codigo_referido(paciente_id)
+    return RedirectResponse(f"/clinic/app/pacientes/{paciente_id}", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# 10.10) FOTOS ANTES/DESPUÉS — PHVA H4
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/pacientes/{paciente_id}/fotos", response_class=HTMLResponse)
+async def vista_fotos(paciente_id: int, clinic_session: Optional[str] = Cookie(None)):
+    """Galería antes/después por paciente."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        paciente = (await session.execute(
+            select(Paciente)
+            .where(Paciente.id == paciente_id)
+            .where(Paciente.clinica_id == clinica.id)
+        )).scalar_one_or_none()
+        if not paciente:
+            return RedirectResponse("/clinic/app/pacientes", status_code=303)
+
+        fotos = list((await session.execute(
+            select(FotoTratamiento)
+            .where(FotoTratamiento.paciente_id == paciente_id)
+            .where(FotoTratamiento.clinica_id == clinica.id)
+            .order_by(desc(FotoTratamiento.fecha))
+        )).scalars().all())
+
+    # Render galería
+    if not fotos:
+        gallery_html = '<div style="text-align:center;padding:60px 20px;color:#9CA3AF;border:2px dashed #E5E7EB;border-radius:12px;"><div style="font-size:48px;margin-bottom:10px;">📷</div><strong>Sin fotos aún</strong><p>Subí la primera abajo</p></div>'
+    else:
+        cards_html = ""
+        for f in fotos:
+            antes = f.foto_antes or "https://via.placeholder.com/300x300/F3F4F6/9CA3AF?text=Sin+foto"
+            despues = f.foto_despues or "https://via.placeholder.com/300x300/F3F4F6/9CA3AF?text=Pendiente"
+            fecha_str = f.fecha.strftime("%d/%m/%Y") if f.fecha else ""
+            cards_html += f'''
+            <div style="background:white;border:1px solid #E5E7EB;border-radius:14px;overflow:hidden;margin-bottom:18px;">
+                <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #F3F4F6;">
+                    <div>
+                        <strong style="font-size:14px;">{esc(f.tratamiento)}</strong>
+                        <div style="font-size:11px;color:#6B7280;">{fecha_str}</div>
+                    </div>
+                    <span style="background:{'#D1FAE5' if f.consentimiento else '#FEE2E2'};color:{'#065F46' if f.consentimiento else '#7F1D1D'};padding:3px 10px;border-radius:10px;font-size:10px;font-weight:700;">{'✓ Consentimiento' if f.consentimiento else '⚠ Sin consent.'}</span>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;background:#E5E7EB;">
+                    <div style="background:white;padding:14px;text-align:center;">
+                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">ANTES</div>
+                        <img src="{esc(antes)}" alt="Antes" style="width:100%;max-height:300px;object-fit:cover;border-radius:8px;">
+                    </div>
+                    <div style="background:white;padding:14px;text-align:center;">
+                        <div style="font-size:11px;color:#FF3B30;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">DESPUÉS</div>
+                        <img src="{esc(despues)}" alt="Después" style="width:100%;max-height:300px;object-fit:cover;border-radius:8px;">
+                    </div>
+                </div>
+                {f'<div style="padding:12px 18px;font-size:12px;color:#374151;border-top:1px solid #F3F4F6;">{esc(f.notas)}</div>' if f.notas else ''}
+            </div>'''
+        gallery_html = cards_html
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Fotos · {esc(paciente.nombre)}</title>{CSS_CLINIC}</head>
+<body>
+<div class="app-wrap">
+    {sidebar_clinic("pacientes", sesion, clinica)}
+    <main class="main">
+        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:20px;">
+            <div>
+                <a href="/clinic/app/pacientes/{paciente_id}" style="font-size:12px;color:#6B7280;text-decoration:none;">← Volver</a>
+                <h1 style="font-size:26px;font-weight:800;margin-top:4px;">📷 Fotos · {esc(paciente.nombre)}</h1>
+                <p style="color:#6B7280;font-size:13px;">{len(fotos)} sesiones registradas</p>
+            </div>
+        </div>
+
+        <!-- Form para agregar foto nueva -->
+        <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;padding:18px;margin-bottom:24px;">
+            <h2 style="font-size:15px;font-weight:700;margin-bottom:12px;">✚ Agregar nueva sesión</h2>
+            <form method="post" action="/clinic/app/pacientes/{paciente_id}/fotos/agregar" style="display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px;">
+                <div>
+                    <label style="font-size:11px;font-weight:700;color:#6B7280;">Tratamiento</label>
+                    <input type="text" name="tratamiento" required placeholder="Ej: Blanqueamiento sesión 2" class="input">
+                </div>
+                <div>
+                    <label style="font-size:11px;font-weight:700;color:#6B7280;">URL foto ANTES</label>
+                    <input type="url" name="foto_antes" placeholder="https://..." class="input">
+                </div>
+                <div>
+                    <label style="font-size:11px;font-weight:700;color:#6B7280;">URL foto DESPUÉS</label>
+                    <input type="url" name="foto_despues" placeholder="https://..." class="input">
+                </div>
+                <button type="submit" class="btn btn-primary">Guardar</button>
+            </form>
+            <p style="font-size:11px;color:#9CA3AF;">💡 Subí las fotos a Google Drive / Dropbox / WhatsApp y pegá el link público acá.</p>
+        </div>
+
+        {gallery_html}
+    </main>
+</div></body></html>""")
+
+
+@router.post("/app/pacientes/{paciente_id}/fotos/agregar")
+async def agregar_foto(
+    paciente_id: int,
+    tratamiento: str = Form(...),
+    foto_antes: str = Form(""),
+    foto_despues: str = Form(""),
+    notas: str = Form(""),
+    consentimiento: Optional[str] = Form(None),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    async with async_session() as session:
+        p_existe = (await session.execute(
+            select(Paciente.id)
+            .where(Paciente.id == paciente_id)
+            .where(Paciente.clinica_id == sesion["clinica_id"])
+        )).scalar_one_or_none()
+        if not p_existe:
+            return RedirectResponse("/clinic/app/pacientes", status_code=303)
+        session.add(FotoTratamiento(
+            clinica_id=sesion["clinica_id"],
+            paciente_id=paciente_id,
+            tratamiento=tratamiento.strip()[:200],
+            foto_antes=foto_antes.strip()[:500],
+            foto_despues=foto_despues.strip()[:500],
+            notas=notas.strip(),
+            consentimiento=(consentimiento == "1"),
+        ))
+        await session.commit()
+    return RedirectResponse(f"/clinic/app/pacientes/{paciente_id}/fotos", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# 10.9) CUESTIONARIOS PRE-CONSULTA — PHVA H3
+# ════════════════════════════════════════════════════════════
+
+@router.get("/cuestionario/{cita_id}/{token}", response_class=HTMLResponse)
+async def cuestionario_publico(
+    cita_id: int,
+    token: str,
+    enviado: Optional[str] = None,
+):
+    """Página pública (sin login) donde el paciente llena el cuestionario.
+    Token único de la cita actúa como auth."""
+    from agent.clinic_cuestionarios import parse_preguntas, render_pregunta_html
+
+    async with async_session() as session:
+        cita = (await session.execute(
+            select(CitaClinic).where(CitaClinic.id == cita_id)
+        )).scalar_one_or_none()
+
+    if not cita or cita.cuestionario_token != token:
+        return HTMLResponse(
+            "<h1 style='color:#EF4444;text-align:center;margin-top:60px;'>⚠ Link inválido o expirado</h1>",
+            status_code=410,
+        )
+
+    async with async_session() as session:
+        paciente = (await session.execute(
+            select(Paciente).where(Paciente.id == cita.paciente_id)
+        )).scalar_one_or_none()
+        clinica = (await session.execute(
+            select(Clinica).where(Clinica.id == cita.clinica_id)
+        )).scalar_one_or_none()
+        cuestionario = (await session.execute(
+            select(Cuestionario)
+            .where(Cuestionario.clinica_id == cita.clinica_id)
+            .where(Cuestionario.es_default == True)  # noqa: E712
+            .where(Cuestionario.activo == True)  # noqa: E712
+            .limit(1)
+        )).scalar_one_or_none()
+
+    if not cuestionario:
+        return HTMLResponse("<h1>Sin cuestionarios configurados</h1>", status_code=404)
+
+    if enviado == "1":
+        nombre = (paciente.nombre.split()[0] if paciente and paciente.nombre else "")
+        return HTMLResponse(f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Gracias</title>{CSS_CLINIC}</head>
+<body style="background:#F9FAFB;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;">
+<div style="max-width:520px;background:white;border-radius:18px;padding:40px;text-align:center;">
+    <div style="font-size:60px;margin-bottom:12px;">✓</div>
+    <h1 style="font-size:24px;font-weight:800;margin-bottom:10px;color:#065F46;">¡Gracias {esc(nombre)}!</h1>
+    <p style="color:#374151;font-size:15px;line-height:1.6;">Tu cuestionario fue enviado a <strong>{esc(clinica.nombre)}</strong>. Te esperamos en tu cita.</p>
+</div></body></html>""")
+
+    preguntas = parse_preguntas(cuestionario.preguntas_json)
+    preguntas_html = "".join(render_pregunta_html(p) for p in preguntas)
+    fecha_str = cita.fecha_hora.strftime("%d/%m/%Y a las %I:%M %p") if cita.fecha_hora else ""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{esc(cuestionario.titulo)}</title>{CSS_CLINIC}</head>
+<body style="background:#F9FAFB;padding:20px 0;">
+<div style="max-width:600px;margin:0 auto;background:white;border-radius:18px;padding:32px;border:1px solid #E5E7EB;">
+    <div style="text-align:center;margin-bottom:24px;">
+        <h1 style="font-size:22px;font-weight:800;margin-bottom:8px;">{esc(cuestionario.titulo)}</h1>
+        <p style="color:#6B7280;font-size:13px;">Para tu cita en <strong>{esc(clinica.nombre)}</strong> el {esc(fecha_str)}</p>
+    </div>
+    {f'<p style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;padding:12px 14px;border-radius:8px;font-size:13px;margin-bottom:24px;">{esc(cuestionario.descripcion)}</p>' if cuestionario.descripcion else ''}
+
+    <form method="post" action="/clinic/cuestionario/{cita_id}/{esc(token)}/enviar">
+        {preguntas_html}
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:12px;padding:14px;font-size:15px;">Enviar respuestas</button>
+    </form>
+
+    <p style="text-align:center;color:#9CA3AF;font-size:11px;margin-top:20px;">
+        🔒 Tus datos son confidenciales y solo los verá el equipo de {esc(clinica.nombre)}
+    </p>
+</div></body></html>""")
+
+
+@router.post("/cuestionario/{cita_id}/{token}/enviar", response_class=HTMLResponse)
+async def cuestionario_enviar(cita_id: int, token: str, request: Request):
+    """Recibe las respuestas del paciente y las guarda."""
+    form = await request.form()
+    respuestas = {k: str(v) for k, v in form.items()}
+
+    async with async_session() as session:
+        cita = (await session.execute(
+            select(CitaClinic).where(CitaClinic.id == cita_id)
+        )).scalar_one_or_none()
+        if not cita or cita.cuestionario_token != token:
+            return RedirectResponse(f"/clinic/cuestionario/{cita_id}/{token}", status_code=303)
+
+        cuestionario = (await session.execute(
+            select(Cuestionario)
+            .where(Cuestionario.clinica_id == cita.clinica_id)
+            .where(Cuestionario.es_default == True)  # noqa: E712
+            .limit(1)
+        )).scalar_one_or_none()
+        if not cuestionario:
+            return HTMLResponse("Sin cuestionario", status_code=404)
+
+        session.add(RespuestaCuestionario(
+            clinica_id=cita.clinica_id,
+            cuestionario_id=cuestionario.id,
+            cita_id=cita.id,
+            paciente_id=cita.paciente_id,
+            respuestas_json=json.dumps(respuestas, ensure_ascii=False),
+            ip=request.client.host if request.client else "",
+            user_agent=request.headers.get("user-agent", "")[:300],
+        ))
+        await session.commit()
+
+    return RedirectResponse(f"/clinic/cuestionario/{cita_id}/{token}?enviado=1", status_code=303)
 
 
 # ════════════════════════════════════════════════════════════

@@ -449,6 +449,67 @@ _workers_tasks: list[asyncio.Task] = []
 _workers_stop_event: asyncio.Event = None
 
 
+async def worker_engagement_reviews(stop_event: asyncio.Event):
+    """PHVA H1 — Cada 30 min: envía solicitudes de reseña Google."""
+    INTERVALO = 1800
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=180)
+        return
+    except asyncio.TimeoutError:
+        pass
+    while not stop_event.is_set():
+        try:
+            from agent.clinic_engagement import enviar_solicitudes_reseña
+            n = await enviar_solicitudes_reseña()
+            if n:
+                logger.info(f"[engagement reviews] {n} mensajes enviados")
+        except Exception as e:
+            logger.error(f"[engagement reviews] error: {e}", exc_info=True)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=INTERVALO)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def worker_engagement_cumple(stop_event: asyncio.Event):
+    """PHVA H2 — Una vez al día a las 9am Colombia: cumpleaños.
+
+    Estrategia: corre cada hora. Cada corrida verifica si la hora actual CO
+    es 9 (entre 9:00-9:59) y si NO se corrió ya hoy. Si sí, ejecuta.
+    """
+    from datetime import datetime as _dt
+    INTERVALO = 3600  # cada hora
+    ultima_corrida_fecha = None
+
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=240)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop_event.is_set():
+        try:
+            try:
+                import pytz
+                ahora_co = _dt.now(pytz.timezone("America/Bogota"))
+            except Exception:
+                ahora_co = _dt.utcnow()
+
+            hoy = ahora_co.date()
+            # Disparar entre 9:00 y 9:59 CO, una vez por día
+            if ahora_co.hour == 9 and ultima_corrida_fecha != hoy:
+                from agent.clinic_engagement import enviar_mensajes_cumple
+                n = await enviar_mensajes_cumple()
+                ultima_corrida_fecha = hoy
+                logger.info(f"[engagement cumple] corrida {hoy}: {n} mensajes")
+        except Exception as e:
+            logger.error(f"[engagement cumple] error: {e}", exc_info=True)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=INTERVALO)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def worker_auto_freeze_billing(stop_event: asyncio.Event):
     """Cada 1 hora: congela trials expirados sin suscripción."""
     INTERVALO = 3600
@@ -485,8 +546,13 @@ async def iniciar_workers():
         asyncio.create_task(worker_recordatorios_citas(_workers_stop_event)),
         asyncio.create_task(worker_sync_sheets(_workers_stop_event)),
         asyncio.create_task(worker_auto_freeze_billing(_workers_stop_event)),
+        asyncio.create_task(worker_engagement_reviews(_workers_stop_event)),
+        asyncio.create_task(worker_engagement_cumple(_workers_stop_event)),
     ]
-    logger.info(f"[workers] {len(_workers_tasks)} workers iniciados (recordatorios + sync_sheets + billing)")
+    logger.info(
+        f"[workers] {len(_workers_tasks)} workers iniciados "
+        f"(recordatorios + sync_sheets + billing + reviews + cumple)"
+    )
 
 
 async def detener_workers():

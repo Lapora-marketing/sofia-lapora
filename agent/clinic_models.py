@@ -75,6 +75,16 @@ class Clinica(Base):
     wl_footer_custom: Mapped[str] = mapped_column(String(500), default="", nullable=True)
     wl_esconder_powered_by: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # PHVA — Features ciclo de mejora
+    # Reseñas Google automatizadas
+    google_review_url: Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    review_msg_horas_despues: Mapped[int] = mapped_column(Integer, default=24)
+    review_msg_template: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+
+    # Cumpleaños WhatsApp
+    cumple_msg_activo: Mapped[bool] = mapped_column(Boolean, default=False)
+    cumple_msg_template: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+
     # Billing / Suscripción (Sprint Monetización v1)
     # estado_pago: "trial" | "activo" | "vencido" | "cancelado" | "manual"
     estado_pago: Mapped[str] = mapped_column(String(20), default="trial", index=True)
@@ -238,6 +248,11 @@ class Paciente(Base):
     ultimo_contacto: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     ultima_cita:     Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
+    # PHVA — Programa de referidos + cumpleaños tracking
+    codigo_referido: Mapped[str] = mapped_column(String(20), default="", index=True)
+    referido_por_id: Mapped[Optional[int]] = mapped_column(ForeignKey("clinic_pacientes.id"), nullable=True, index=True)
+    cumple_mensaje_enviado_anio: Mapped[int] = mapped_column(Integer, default=0)
+
 
 # ════════════════════════════════════════════════════════════
 # MENSAJE UNIFICADO — Inbox WhatsApp + Instagram + Email
@@ -313,6 +328,10 @@ class CitaClinic(Base):
     # Voice Bot Day 5 — flag idempotente para no duplicar encolado
     voz_confirmacion_encolada: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # PHVA — flag idempotente reseña Google + token cuestionario
+    review_msg_enviado: Mapped[bool] = mapped_column(Boolean, default=False)
+    cuestionario_token: Mapped[str] = mapped_column(String(40), default="", index=True)
+
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -338,6 +357,43 @@ class PlantillaRespuesta(Base):
 # ════════════════════════════════════════════════════════════
 # FOTO ANTES/DESPUÉS — Para estética
 # ════════════════════════════════════════════════════════════
+
+class Cuestionario(Base):
+    """Cuestionario pre-consulta configurable por clínica."""
+    __tablename__ = "clinic_cuestionarios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id: Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+
+    titulo:    Mapped[str] = mapped_column(String(200))
+    descripcion: Mapped[Text] = mapped_column(Text, default="", nullable=True)
+    # JSON array de preguntas: [{"id": "alergias", "texto": "...", "tipo": "texto|si_no|escala"}]
+    preguntas_json: Mapped[Text] = mapped_column(Text, default="[]")
+    activo:    Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Cuestionario "default" se manda automáticamente con cada cita nueva
+    es_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RespuestaCuestionario(Base):
+    """Respuestas que un paciente dio a un cuestionario (vinculado a una cita)."""
+    __tablename__ = "clinic_respuestas_cuestionario"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id:    Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+    cuestionario_id: Mapped[int] = mapped_column(ForeignKey("clinic_cuestionarios.id"), index=True)
+    cita_id:       Mapped[Optional[int]] = mapped_column(ForeignKey("clinic_citas.id"), nullable=True, index=True)
+    paciente_id:   Mapped[int] = mapped_column(ForeignKey("clinic_pacientes.id"), index=True)
+
+    # JSON dict: {"alergias": "ninguna", "medicamentos": "...", "escala_dolor": 7}
+    respuestas_json: Mapped[Text] = mapped_column(Text, default="{}")
+    # Información del navegador del paciente (audit)
+    ip:         Mapped[str] = mapped_column(String(50), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 
 class FotoTratamiento(Base):
     """Foto antes/después con consentimiento."""
@@ -783,6 +839,20 @@ async def aplicar_migraciones():
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ultimo_pago_en TIMESTAMP",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS proximo_cobro_en TIMESTAMP",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS razon_freeze VARCHAR(200) DEFAULT ''",
+            # PHVA ciclo mejora — Reseñas Google + Cumpleaños
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS google_review_url VARCHAR(500) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS review_msg_horas_despues INTEGER DEFAULT 24",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS review_msg_template TEXT DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS cumple_msg_activo BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS cumple_msg_template TEXT DEFAULT ''",
+            # PHVA — Pacientes (referidos + cumple tracking)
+            "ALTER TABLE clinic_pacientes ADD COLUMN IF NOT EXISTS codigo_referido VARCHAR(20) DEFAULT ''",
+            "ALTER TABLE clinic_pacientes ADD COLUMN IF NOT EXISTS referido_por_id INTEGER",
+            "ALTER TABLE clinic_pacientes ADD COLUMN IF NOT EXISTS cumple_mensaje_enviado_anio INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS ix_pacientes_codigo_referido ON clinic_pacientes (codigo_referido)",
+            # PHVA — Citas (reseña + cuestionario tokens)
+            "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS review_msg_enviado BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE clinic_citas ADD COLUMN IF NOT EXISTS cuestionario_token VARCHAR(40) DEFAULT ''",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -857,6 +927,39 @@ async def aplicar_migraciones():
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN proximo_cobro_en DATETIME")
                 if "razon_freeze" not in columnas_existentes:
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN razon_freeze VARCHAR(200) DEFAULT ''")
+                # PHVA mejoras
+                if "google_review_url" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN google_review_url VARCHAR(500) DEFAULT ''")
+                if "review_msg_horas_despues" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN review_msg_horas_despues INTEGER DEFAULT 24")
+                if "review_msg_template" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN review_msg_template TEXT DEFAULT ''")
+                if "cumple_msg_activo" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN cumple_msg_activo BOOLEAN DEFAULT 0")
+                if "cumple_msg_template" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN cumple_msg_template TEXT DEFAULT ''")
+                # Pacientes
+                try:
+                    result_pac = await conn.execute(text("PRAGMA table_info(clinic_pacientes)"))
+                    cols_pac = {row[1] for row in result_pac.fetchall()}
+                    if cols_pac and "codigo_referido" not in cols_pac:
+                        migraciones.append("ALTER TABLE clinic_pacientes ADD COLUMN codigo_referido VARCHAR(20) DEFAULT ''")
+                    if cols_pac and "referido_por_id" not in cols_pac:
+                        migraciones.append("ALTER TABLE clinic_pacientes ADD COLUMN referido_por_id INTEGER")
+                    if cols_pac and "cumple_mensaje_enviado_anio" not in cols_pac:
+                        migraciones.append("ALTER TABLE clinic_pacientes ADD COLUMN cumple_mensaje_enviado_anio INTEGER DEFAULT 0")
+                except Exception:
+                    pass
+                # Citas
+                try:
+                    result_cit2 = await conn.execute(text("PRAGMA table_info(clinic_citas)"))
+                    cols_cit2 = {row[1] for row in result_cit2.fetchall()}
+                    if cols_cit2 and "review_msg_enviado" not in cols_cit2:
+                        migraciones.append("ALTER TABLE clinic_citas ADD COLUMN review_msg_enviado BOOLEAN DEFAULT 0")
+                    if cols_cit2 and "cuestionario_token" not in cols_cit2:
+                        migraciones.append("ALTER TABLE clinic_citas ADD COLUMN cuestionario_token VARCHAR(40) DEFAULT ''")
+                except Exception:
+                    pass
                 # Voice Bot mock_mode en voice_config
                 try:
                     result_vc = await conn.execute(text("PRAGMA table_info(voice_config)"))
