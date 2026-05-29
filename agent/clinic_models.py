@@ -75,6 +75,16 @@ class Clinica(Base):
     wl_footer_custom: Mapped[str] = mapped_column(String(500), default="", nullable=True)
     wl_esconder_powered_by: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Billing / Suscripción (Sprint Monetización v1)
+    # estado_pago: "trial" | "activo" | "vencido" | "cancelado" | "manual"
+    estado_pago: Mapped[str] = mapped_column(String(20), default="trial", index=True)
+    trial_termina_en: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    stripe_subscription_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    ultimo_pago_en: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    proximo_cobro_en: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    razon_freeze: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+
     # Suspensión / billing
     congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     motivo_suspension: Mapped[str] = mapped_column(String(300), default="", nullable=True)
@@ -376,12 +386,17 @@ async def crear_clinica(nombre: str, email_admin: str, password_admin: str,
                 select(Clinica).where(Clinica.slug == slug_final)
             )).scalar_one_or_none()
 
+        from datetime import timedelta as _td
+        ahora = datetime.utcnow()
         clinica = Clinica(
             nombre=nombre,
             slug=slug_final,
             especialidad=especialidad,
             ciudad=ciudad,
-            plan="free",
+            plan="pro",  # Trial directamente en Pro (mejor conversión)
+            estado_pago="trial",
+            trial_termina_en=ahora + _td(days=14),
+            monto_mensual_usd=0,  # 0 hasta que pague
         )
         session.add(clinica)
         await session.flush()  # Para obtener clinica.id
@@ -732,6 +747,14 @@ async def aplicar_migraciones():
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_email_remitente VARCHAR(200) DEFAULT ''",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_footer_custom VARCHAR(500) DEFAULT ''",
             "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_esconder_powered_by BOOLEAN DEFAULT FALSE",
+            # Sprint Monetización v1 — billing fields
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS estado_pago VARCHAR(20) DEFAULT 'trial'",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS trial_termina_en TIMESTAMP",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(80) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(80) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS ultimo_pago_en TIMESTAMP",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS proximo_cobro_en TIMESTAMP",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS razon_freeze VARCHAR(200) DEFAULT ''",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -791,6 +814,21 @@ async def aplicar_migraciones():
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN wl_footer_custom VARCHAR(500) DEFAULT ''")
                 if "wl_esconder_powered_by" not in columnas_existentes:
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN wl_esconder_powered_by BOOLEAN DEFAULT 0")
+                # Billing fields
+                if "estado_pago" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN estado_pago VARCHAR(20) DEFAULT 'trial'")
+                if "trial_termina_en" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN trial_termina_en DATETIME")
+                if "stripe_customer_id" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN stripe_customer_id VARCHAR(80) DEFAULT ''")
+                if "stripe_subscription_id" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN stripe_subscription_id VARCHAR(80) DEFAULT ''")
+                if "ultimo_pago_en" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN ultimo_pago_en DATETIME")
+                if "proximo_cobro_en" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN proximo_cobro_en DATETIME")
+                if "razon_freeze" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN razon_freeze VARCHAR(200) DEFAULT ''")
                 # Voice Bot mock_mode en voice_config
                 try:
                     result_vc = await conn.execute(text("PRAGMA table_info(voice_config)"))

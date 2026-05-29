@@ -985,6 +985,19 @@ CSS_CLINIC = """
 """
 
 
+def _banner_trial(clinica: Clinica) -> str:
+    """Banner countdown del trial. Vacío si ya está suscrito o cancelado."""
+    if clinica.estado_pago != "trial" or not clinica.trial_termina_en:
+        return ""
+    delta = clinica.trial_termina_en - datetime.utcnow()
+    dias = max(0, delta.days)
+    if dias <= 0:
+        return '<div style="background:linear-gradient(90deg,#FEE2E2,#FECACA);border:1px solid #EF4444;color:#7F1D1D;padding:14px 20px;border-radius:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;"><strong>⚠ Tu prueba terminó</strong><a href="/clinic/app/billing" style="background:#EF4444;color:white;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:700;font-size:13px;">Suscribirme ahora →</a></div>'
+    if dias <= 3:
+        return f'<div style="background:linear-gradient(90deg,#FEF3C7,#FDE68A);border:1px solid #F59E0B;color:#78350F;padding:14px 20px;border-radius:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;"><strong>⏰ Tu prueba termina en {dias} día{"" if dias == 1 else "s"}</strong><a href="/clinic/app/billing" style="background:#F59E0B;color:white;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:700;font-size:13px;">Suscribirme ahora →</a></div>'
+    return f'<div style="background:linear-gradient(90deg,#DBEAFE,#BFDBFE);border:1px solid #3B82F6;color:#1E40AF;padding:12px 20px;border-radius:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px;"><span>🎁 <strong>Estás en prueba gratuita · {dias} días restantes</strong></span><a href="/clinic/app/billing" style="color:#1E40AF;font-weight:700;text-decoration:underline;font-size:12px;">Ver planes</a></div>'
+
+
 def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
     """Sidebar de la app del SaaS."""
     items = [
@@ -997,6 +1010,7 @@ def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
         ("analytics", "⭐ Analytics avanzado", "/clinic/app/analytics", "M3 3v18h18 M9 17V9 M15 17V5 M21 17v-3"),
         ("pacientes-riesgo", "⭐ Pacientes en riesgo", "/clinic/app/pacientes-riesgo", "M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"),
         ("api", "⭐ API REST", "/clinic/app/api", "M16 18l6-6-6-6 M8 6l-6 6 6 6"),
+        ("billing", "💳 Facturación", "/clinic/app/billing", "M2 7h20 M5 11h2 M9 11h2 M2 7v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7"),
         ("usuarios",  "Equipo",     "/clinic/app/usuarios",    "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87"),
         ("config",    "Configuración","/clinic/app/configuracion","M12 1v6 M12 17v6 M4.22 4.22l4.24 4.24"),
     ]
@@ -1456,6 +1470,7 @@ async def dashboard(
   <div class="app-wrap">
     {sidebar_clinic("dashboard", sesion, clinica)}
     <main class="main">
+      {_banner_trial(clinica)}
       <div class="page-header">
         <div>
           <h1 class="page-title">Hola, {html.escape(sesion.get('nombre','').split()[0] if sesion.get('nombre') else '')} 👋</h1>
@@ -3705,6 +3720,231 @@ async def aceptar_invitacion(
 
 
 # ════════════════════════════════════════════════════════════
+# 10.4) BILLING — Suscripciones Stripe + Customer Portal
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/billing", response_class=HTMLResponse)
+async def vista_billing(
+    canceled: Optional[str] = None,
+    success: Optional[str] = None,
+    error: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Dashboard de billing: ver estado actual + upgrade/cancelar."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    def esc(s): return html.escape(str(s or ""), quote=True)
+
+    from agent.clinic_billing import PRECIOS_USD, stripe_disponible
+
+    # Calcular días restantes de trial
+    dias_trial = 0
+    en_trial = False
+    if clinica.estado_pago == "trial" and clinica.trial_termina_en:
+        delta = clinica.trial_termina_en - datetime.utcnow()
+        dias_trial = max(0, delta.days)
+        en_trial = dias_trial > 0
+
+    # Banner según estado
+    if clinica.estado_pago == "trial":
+        if dias_trial <= 0:
+            banner_estado = '<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:18px;border-radius:14px;margin-bottom:24px;"><strong>⚠ Tu prueba terminó</strong><br>Suscribite ahora para reactivar tu cuenta.</div>'
+        elif dias_trial <= 3:
+            banner_estado = f'<div style="background:#FEF3C7;border:1px solid #F59E0B;color:#78350F;padding:18px;border-radius:14px;margin-bottom:24px;"><strong>⏰ Tu prueba termina en {dias_trial} día(s)</strong><br>Suscribite ahora para no perder acceso.</div>'
+        else:
+            banner_estado = f'<div style="background:#DBEAFE;border:1px solid #3B82F6;color:#1E40AF;padding:18px;border-radius:14px;margin-bottom:24px;"><strong>🎁 Tu prueba sigue activa — {dias_trial} días restantes</strong><br>Suscribite cuando quieras para asegurar el servicio.</div>'
+    elif clinica.estado_pago == "activo":
+        proximo = clinica.proximo_cobro_en.strftime("%d/%m/%Y") if clinica.proximo_cobro_en else "—"
+        banner_estado = f'<div style="background:#D1FAE5;border:1px solid #10B981;color:#065F46;padding:18px;border-radius:14px;margin-bottom:24px;"><strong>✓ Suscripción activa · Plan {esc(clinica.plan).upper()}</strong><br>Próximo cobro: {proximo} · ${clinica.monto_mensual_usd} USD</div>'
+    elif clinica.estado_pago == "vencido":
+        banner_estado = '<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:18px;border-radius:14px;margin-bottom:24px;"><strong>⚠ Cobro fallido</strong><br>No pudimos cobrar tu tarjeta. Actualízala desde el portal de cliente para no perder acceso.</div>'
+    elif clinica.estado_pago == "cancelado":
+        banner_estado = '<div style="background:#F3F4F6;border:1px solid #6B7280;color:#374151;padding:18px;border-radius:14px;margin-bottom:24px;"><strong>Suscripción cancelada</strong><br>Reactivá tu cuenta cuando quieras.</div>'
+    else:
+        banner_estado = ""
+
+    if not stripe_disponible():
+        stripe_warning = '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;padding:14px;border-radius:10px;margin-bottom:20px;font-size:13px;">⚠ El proveedor de pagos (Stripe) no está configurado todavía. Contactá a soporte para suscribirte manualmente: <a href="https://wa.me/573228783019" style="color:#92400E;font-weight:700;">WhatsApp</a></div>'
+    else:
+        stripe_warning = ""
+
+    banner_msg = ""
+    if canceled == "1":
+        banner_msg = '<div style="background:#F3F4F6;border:1px solid #9CA3AF;color:#374151;padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px;">El checkout se canceló — no se cobró nada.</div>'
+    elif success == "1":
+        banner_msg = '<div style="background:#D1FAE5;border:1px solid #10B981;color:#065F46;padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px;font-weight:600;">✓ ¡Pago exitoso! Tu suscripción está activa.</div>'
+    elif error:
+        banner_msg = f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px;">⚠ {esc(error)}</div>'
+
+    # Plan cards (highlight el actual)
+    es_pro_actual = clinica.plan == "pro" and clinica.estado_pago == "activo"
+    es_studio_actual = clinica.plan == "studio" and clinica.estado_pago == "activo"
+
+    def plan_card(plan_id: str, nombre: str, precio: int, features: list[str], es_actual: bool, popular: bool = False):
+        color = "#8B5CF6" if plan_id == "studio" else "#FF3B30"
+        border = f"2px solid {color}" if (popular or es_actual) else "1px solid #E5E7EB"
+        badge = '<span style="position:absolute;top:-12px;right:18px;background:#FF3B30;color:white;padding:4px 14px;border-radius:14px;font-size:11px;font-weight:800;">MÁS POPULAR</span>' if popular else ''
+        if es_actual:
+            badge = '<span style="position:absolute;top:-12px;right:18px;background:#10B981;color:white;padding:4px 14px;border-radius:14px;font-size:11px;font-weight:800;">PLAN ACTUAL</span>'
+        feats_html = "".join(f'<li style="display:flex;align-items:start;gap:8px;margin-bottom:6px;font-size:13px;"><span style="color:{color};font-weight:700;">✓</span> <span>{esc(f)}</span></li>' for f in features)
+        if es_actual:
+            cta = '<button disabled style="background:#9CA3AF;color:white;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:not-allowed;width:100%;">Plan actual</button>'
+        else:
+            label = "Subir a " + nombre if (es_pro_actual and plan_id == "studio") else nombre
+            cta = f'<form method="post" action="/clinic/app/billing/upgrade" style="margin:0;"><input type="hidden" name="plan" value="{plan_id}"><button type="submit" style="background:{color};color:white;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer;width:100%;font-size:14px;">{esc(label)} — ${precio} USD/mes</button></form>'
+
+        return f'''
+        <div style="background:white;border:{border};border-radius:18px;padding:24px;position:relative;">
+            {badge}
+            <div style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">{esc(nombre)}</div>
+            <div style="font-size:36px;font-weight:900;margin-bottom:2px;">${precio}<span style="font-size:14px;color:var(--text-soft);font-weight:500;"> USD/mes</span></div>
+            <div style="font-size:12px;color:var(--text-soft);margin-bottom:18px;">~${precio * 4000:,} COP/mes</div>
+            <ul style="list-style:none;padding:0;margin:0 0 20px;">{feats_html}</ul>
+            {cta}
+        </div>'''
+
+    pro_card = plan_card(
+        "pro", "Pro", 100,
+        ["Pacientes ilimitados", "WhatsApp + Instagram + Email", "IA SofIA 24/7", "5 usuarios del equipo",
+         "Recordatorios automáticos", "Google Calendar + Sheets sync", "Plantillas con variables"],
+        es_pro_actual, popular=True,
+    )
+    studio_card = plan_card(
+        "studio", "Studio", 250,
+        ["Todo lo de Pro", "Usuarios ilimitados", "Pacientes en riesgo (IA detecta fuga)",
+         "Analytics avanzado + ROI", "API REST custom", "White-label total",
+         "Backup descargable", "Soporte 24/7 dedicado"],
+        es_studio_actual,
+    )
+
+    # Botón gestionar suscripción (Stripe Portal)
+    portal_btn = ""
+    if clinica.stripe_customer_id and stripe_disponible():
+        portal_btn = '<div style="margin-top:24px;text-align:center;"><form method="post" action="/clinic/app/billing/portal" style="display:inline;"><button type="submit" style="background:white;color:#374151;border:1px solid #E5E7EB;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">⚙ Gestionar suscripción (cambiar tarjeta, ver facturas, cancelar)</button></form></div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Facturación - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("billing", sesion, clinica)}
+    <main class="main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">💳 Facturación y suscripción</h1>
+      <p style="color:var(--text-soft);margin-bottom:24px;">Gestioná tu plan y método de pago</p>
+
+      {banner_msg}
+      {banner_estado}
+      {stripe_warning}
+
+      <h2 style="font-size:18px;font-weight:700;margin:20px 0 14px;">Elegí tu plan</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+        {pro_card}
+        {studio_card}
+      </div>
+
+      {portal_btn}
+
+      <div style="margin-top:32px;padding:18px;background:#F9FAFB;border-radius:12px;font-size:13px;color:#6B7280;line-height:1.7;">
+        <strong style="color:#374151;">💡 Cómo funciona:</strong><br>
+        • Te cobramos en USD con tarjeta internacional vía Stripe<br>
+        • Si tu tarjeta falla, te avisamos por email y reintentamos 3 días antes de pausar<br>
+        • Podés cancelar cuando quieras desde "Gestionar suscripción" — sin penalidad<br>
+        • Para pago por PSE o transferencia local, escribinos: <a href="https://wa.me/573228783019" style="color:#FF3B30;font-weight:600;">WhatsApp +57 322 878 3019</a>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/billing/upgrade")
+async def billing_upgrade(
+    plan: str = Form(...),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Crea Stripe Checkout Session y redirige a Stripe-hosted page."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    from agent.clinic_billing import crear_checkout_session
+    exito, url, err = await crear_checkout_session(clinica, plan)
+    if not exito:
+        from urllib.parse import quote as _q
+        return RedirectResponse(f"/clinic/app/billing?error={_q(err[:120])}", status_code=303)
+    return RedirectResponse(url, status_code=303)
+
+
+@router.post("/app/billing/portal")
+async def billing_portal(clinic_session: Optional[str] = Cookie(None)):
+    """Redirige al cliente al Stripe Customer Portal."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    from agent.clinic_billing import crear_portal_session
+    exito, url, err = await crear_portal_session(clinica)
+    if not exito:
+        from urllib.parse import quote as _q
+        return RedirectResponse(f"/clinic/app/billing?error={_q(err[:120])}", status_code=303)
+    return RedirectResponse(url, status_code=303)
+
+
+@router.get("/billing/success", response_class=HTMLResponse)
+async def billing_success(clinica: Optional[int] = None, plan: Optional[str] = None):
+    """Página de éxito tras checkout. Solo muestra confirmación —
+    la activación REAL la hace el webhook."""
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>¡Suscripción activa!</title>{CSS_CLINIC}</head>
+<body style="background:#F9FAFB;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+<div style="max-width:520px;background:white;border:1px solid #E5E7EB;border-radius:18px;padding:40px;text-align:center;">
+    <div style="font-size:64px;margin-bottom:14px;">🎉</div>
+    <h1 style="font-size:24px;font-weight:800;margin-bottom:10px;color:#065F46;">¡Pago exitoso!</h1>
+    <p style="color:#374151;font-size:15px;line-height:1.6;margin-bottom:24px;">Tu suscripción al plan {html.escape((plan or 'pro').upper())} está activa. Vamos a procesar el cobro y en unos segundos tendrás acceso completo.</p>
+    <a href="/clinic/app/" style="display:inline-block;background:#FF3B30;color:white;padding:14px 28px;border-radius:10px;font-weight:700;text-decoration:none;">Ir al dashboard →</a>
+</div></body></html>""")
+
+
+@router.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    """Recibe eventos de Stripe. VERIFICA SIGNATURE antes de procesar.
+
+    Configurar en Stripe Dashboard → Webhooks:
+    URL: https://sofia-lapora-production.up.railway.app/clinic/billing/webhook
+    Eventos: checkout.session.completed, invoice.payment_succeeded,
+             invoice.payment_failed, customer.subscription.deleted,
+             customer.subscription.updated
+    """
+    from agent.clinic_billing import verificar_webhook_signature, procesar_webhook
+    import json as _json
+
+    body = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+
+    # Verificar firma
+    if not verificar_webhook_signature(body, signature):
+        logger.warning(f"[billing webhook] firma inválida desde {request.client.host if request.client else '?'}")
+        raise HTTPException(status_code=400, detail="Firma inválida")
+
+    try:
+        event = _json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON inválido")
+
+    resultado = await procesar_webhook(event)
+    logger.info(f"[billing webhook] resultado: {resultado}")
+    return {"received": True, "result": resultado}
+
+
+# ════════════════════════════════════════════════════════════
 # 10.55) API KEYS — Studio feature gestión REST API
 # ════════════════════════════════════════════════════════════
 
@@ -5565,7 +5805,15 @@ async def superadmin_dashboard(
     total_clinicas = len(clinicas)
     activas = sum(1 for c in clinicas if not c.congelada)
     congeladas = total_clinicas - activas
-    mrr = sum(c.monto_mensual_usd for c in clinicas if not c.congelada)
+
+    # MRR real (solo suscripciones activas, no trials)
+    from agent.clinic_billing import mrr_real as _mrr_real_fn
+    mrr_data = await _mrr_real_fn()
+    mrr = mrr_data["mrr_usd"]
+    mrr_trials_pipeline = mrr_data["trials_pipeline_usd"]
+    mrr_trials_count = mrr_data["trials_count"]
+    mrr_vencidos = mrr_data["vencidos_en_gracia"]
+    mrr_churn = mrr_data["churn_30d"]
 
     filas = ""
     for c in clinicas:

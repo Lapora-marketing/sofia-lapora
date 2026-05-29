@@ -449,6 +449,29 @@ _workers_tasks: list[asyncio.Task] = []
 _workers_stop_event: asyncio.Event = None
 
 
+async def worker_auto_freeze_billing(stop_event: asyncio.Event):
+    """Cada 1 hora: congela trials expirados sin suscripción."""
+    INTERVALO = 3600
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=120)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop_event.is_set():
+        try:
+            from agent.clinic_billing import auto_freeze_trials_expirados
+            n = await auto_freeze_trials_expirados()
+            if n:
+                logger.info(f"[billing worker] {n} clínicas congeladas (trial expirado)")
+        except Exception as e:
+            logger.error(f"[billing worker] error: {e}", exc_info=True)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=INTERVALO)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def iniciar_workers():
     """Inicia todos los workers de fondo. Idempotente."""
     global _workers_stop_event, _workers_tasks
@@ -461,8 +484,9 @@ async def iniciar_workers():
     _workers_tasks = [
         asyncio.create_task(worker_recordatorios_citas(_workers_stop_event)),
         asyncio.create_task(worker_sync_sheets(_workers_stop_event)),
+        asyncio.create_task(worker_auto_freeze_billing(_workers_stop_event)),
     ]
-    logger.info(f"[workers] {len(_workers_tasks)} workers iniciados (recordatorios + sync_sheets)")
+    logger.info(f"[workers] {len(_workers_tasks)} workers iniciados (recordatorios + sync_sheets + billing)")
 
 
 async def detener_workers():
