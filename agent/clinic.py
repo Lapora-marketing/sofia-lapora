@@ -21,12 +21,29 @@ URLs privadas (requieren sesion):
 
 import os
 import html
+import io
+import csv
+import json
+import zipfile
 import logging
 import secrets
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import quote as url_quote
+
+import httpx
 
 logger = logging.getLogger("agentkit")
+
+
+# ════════════════════════════════════════════════════════════
+# UTILS COMPARTIDOS — usados por handlers HTML
+# ════════════════════════════════════════════════════════════
+
+def esc(s) -> str:
+    """HTML-escape robusto. Centraliza el patrón que se repetía 10× inline."""
+    return html.escape(str(s or ""), quote=True)
 from fastapi import APIRouter, Depends, Request, Form, HTTPException, Cookie, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, func, or_, desc
@@ -2280,8 +2297,6 @@ async def vista_timeline_paciente(
     elif filtro == "citas":
         eventos = [e for e in eventos if e["tipo"] == "cita"]
 
-    def esc(s):
-        return html.escape(str(s or ""), quote=True)
 
     # Counters por canal (para chips)
     n_chat = sum(1 for e in eventos if e["tipo"] == "chat")
@@ -2472,7 +2487,6 @@ async def editar_paciente_form(
         if not p:
             return HTMLResponse("<h1>Paciente no encontrado</h1>", status_code=404)
 
-    def esc(s): return html.escape(s or "", quote=True)
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><title>Editar {esc(p.nombre)}</title>{CSS_CLINIC}</head>
 <body>
@@ -3018,7 +3032,6 @@ async def vista_config(
         return RedirectResponse("/clinic/login", status_code=303)
     clinica = await obtener_clinica(sesion["clinica_id"])
 
-    def esc(s): return html.escape(s or "", quote=True)
     wa_conectado = bool(clinica.whatsapp_phone_id)
     ig_conectado = bool(clinica.instagram_account_id)
     sheets_conectado = bool(clinica.google_sheet_id)
@@ -3406,7 +3419,6 @@ async def vista_usuarios(
     if not clinica:
         return RedirectResponse("/clinic/login", status_code=303)
 
-    def esc(s): return html.escape(s or "", quote=True)
 
     async with async_session() as session:
         usuarios = (await session.execute(
@@ -3641,7 +3653,6 @@ async def vista_aceptar_invitacion(token: str, error: Optional[str] = None):
                 select(Clinica).where(Clinica.id == inv.clinica_id)
             )).scalar_one_or_none()
 
-    def esc(s): return html.escape(s or "", quote=True)
 
     if not inv or inv.usada or inv.expira_en < datetime.utcnow() or not clinica:
         razon = "no encontrada"
@@ -3738,9 +3749,8 @@ async def vista_billing(
     if not clinica:
         return RedirectResponse("/clinic/login", status_code=303)
 
-    def esc(s): return html.escape(str(s or ""), quote=True)
 
-    from agent.clinic_billing import PRECIOS_USD, stripe_disponible
+    from agent.clinic_billing import PRECIOS_USD, mercadopago_disponible
 
     # Calcular días restantes de trial
     dias_trial = 0
@@ -3768,10 +3778,10 @@ async def vista_billing(
     else:
         banner_estado = ""
 
-    if not stripe_disponible():
-        stripe_warning = '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;padding:14px;border-radius:10px;margin-bottom:20px;font-size:13px;">⚠ El proveedor de pagos (MercadoPago) no está configurado todavía. Contactá a soporte para suscribirte manualmente: <a href="https://wa.me/573228783019" style="color:#92400E;font-weight:700;">WhatsApp</a></div>'
+    if not mercadopago_disponible():
+        mp_warning = '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;padding:14px;border-radius:10px;margin-bottom:20px;font-size:13px;">⚠ El proveedor de pagos (MercadoPago) no está configurado todavía. Contactá a soporte para suscribirte manualmente: <a href="https://wa.me/573228783019" style="color:#92400E;font-weight:700;">WhatsApp</a></div>'
     else:
-        stripe_warning = ""
+        mp_warning = ""
 
     banner_msg = ""
     if canceled == "1":
@@ -3783,7 +3793,7 @@ async def vista_billing(
 
     # Plan cards (highlight el actual)
     es_pro_actual = clinica.plan == "pro" and clinica.estado_pago == "activo"
-    es_studio_actual = clinica.plan == "studio" and clinica.estado_pago == "activo"
+    es_studio_actual = clinica.puede_usar_studio_features() and clinica.estado_pago == "activo"
 
     def plan_card(plan_id: str, nombre: str, precio_usd: int, features: list[str], es_actual: bool, popular: bool = False):
         color = "#8B5CF6" if plan_id == "studio" else "#FF3B30"
@@ -3825,7 +3835,7 @@ async def vista_billing(
 
     # Botón gestionar suscripción (Stripe Portal)
     portal_btn = ""
-    if clinica.stripe_customer_id and stripe_disponible():
+    if clinica.stripe_customer_id and mercadopago_disponible():
         portal_btn = '<div style="margin-top:24px;text-align:center;"><form method="post" action="/clinic/app/billing/portal" style="display:inline;"><button type="submit" style="background:white;color:#374151;border:1px solid #E5E7EB;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">⚙ Gestionar suscripción (cambiar tarjeta, ver facturas, cancelar)</button></form></div>'
 
     return HTMLResponse(f"""<!DOCTYPE html>
@@ -3839,7 +3849,7 @@ async def vista_billing(
 
       {banner_msg}
       {banner_estado}
-      {stripe_warning}
+      {mp_warning}
 
       <h2 style="font-size:18px;font-weight:700;margin:20px 0 14px;">Elegí tu plan</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
@@ -3878,8 +3888,7 @@ async def billing_upgrade(
     from agent.clinic_billing import crear_checkout_session
     exito, url, err = await crear_checkout_session(clinica, plan)
     if not exito:
-        from urllib.parse import quote as _q
-        return RedirectResponse(f"/clinic/app/billing?error={_q(err[:120])}", status_code=303)
+        return RedirectResponse(f"/clinic/app/billing?error={url_quote(err[:120])}", status_code=303)
     return RedirectResponse(url, status_code=303)
 
 
@@ -3896,8 +3905,7 @@ async def billing_portal(clinic_session: Optional[str] = Cookie(None)):
     from agent.clinic_billing import crear_portal_session
     exito, url, err = await crear_portal_session(clinica)
     if not exito:
-        from urllib.parse import quote as _q
-        return RedirectResponse(f"/clinic/app/billing?error={_q(err[:120])}", status_code=303)
+        return RedirectResponse(f"/clinic/app/billing?error={url_quote(err[:120])}", status_code=303)
     return RedirectResponse(url, status_code=303)
 
 
@@ -3962,7 +3970,7 @@ async def vista_api(
     if not clinica:
         return RedirectResponse("/clinic/login", status_code=303)
 
-    es_studio = (clinica.plan or "").lower() == "studio"
+    es_studio = clinica.es_studio()
     if not es_studio:
         return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><title>API custom - Lapora Clinic</title>{CSS_CLINIC}</head>
@@ -3981,7 +3989,6 @@ async def vista_api(
     </div>
 </main></div></body></html>""")
 
-    def esc(s): return html.escape(str(s or ""), quote=True)
 
     # Listar keys existentes
     async with async_session() as session:
@@ -4108,8 +4115,7 @@ async def crear_api_key(
         clinica_id=clinica.id, nombre=nombre, scopes=scopes,
     )
     # La key se pasa por query param SOLO esta vez
-    from urllib.parse import quote as _q
-    return RedirectResponse(f"/clinic/app/api?nueva_key={_q(key_plana)}", status_code=303)
+    return RedirectResponse(f"/clinic/app/api?nueva_key={url_quote(key_plana)}", status_code=303)
 
 
 @router.post("/app/api/{api_key_id}/revocar", response_class=HTMLResponse)
@@ -4141,7 +4147,7 @@ async def vista_analytics(
     if not clinica:
         return RedirectResponse("/clinic/login", status_code=303)
 
-    es_studio = (clinica.plan or "").lower() == "studio"
+    es_studio = clinica.es_studio()
 
     if not es_studio:
         return HTMLResponse(f"""<!DOCTYPE html>
@@ -4166,7 +4172,6 @@ async def vista_analytics(
     periodo = max(7, min(90, int(periodo)))
     data = await analytics_completo(clinica.id, dias_atras=periodo)
 
-    def esc(s): return html.escape(str(s or ""), quote=True)
 
     # Sparkline SVG inline para tendencia
     serie = data["tendencia_diaria"]
@@ -4320,7 +4325,7 @@ async def vista_pacientes_riesgo(
     if not clinica:
         return RedirectResponse("/clinic/login", status_code=303)
 
-    es_studio = (clinica.plan or "").lower() == "studio"
+    es_studio = clinica.es_studio()
 
     # Si no es Studio, mostrar página de upgrade
     if not es_studio:
@@ -4378,7 +4383,6 @@ async def vista_pacientes_riesgo(
     en_riesgo = await listar_pacientes_en_riesgo(clinica.id, score_minimo=score_min, limite=50)
     metricas = await metricas_riesgo(clinica.id)
 
-    def esc(s): return html.escape(s or "", quote=True)
 
     # Tarjetas por paciente
     tarjetas = ""
@@ -4487,11 +4491,6 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
     - metadata.json (info de la clínica + timestamp del backup)
     """
     from fastapi.responses import StreamingResponse
-    import io as _io
-    import zipfile as _zipfile
-    import csv as _csv_mod
-    import json as _json_mod
-    from datetime import datetime as _dt, timedelta as _td
 
     sesion = obtener_sesion(clinic_session)
     if not sesion:
@@ -4504,11 +4503,11 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
         return RedirectResponse("/clinic/app/configuracion?error=Backup+descargable+es+feature+Studio", status_code=303)
 
     # Generar ZIP en memoria
-    zip_buffer = _io.BytesIO()
-    ahora = _dt.utcnow()
-    desde_mensajes = ahora - _td(days=90)
+    zip_buffer = io.BytesIO()
+    ahora = datetime.utcnow()
+    desde_mensajes = ahora - timedelta(days=90)
 
-    with _zipfile.ZipFile(zip_buffer, "w", _zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # 1. Metadata
         metadata = {
             "clinica_id": clinica.id,
@@ -4526,11 +4525,11 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
                 "plantillas": "todas",
             },
         }
-        zf.writestr("metadata.json", _json_mod.dumps(metadata, ensure_ascii=False, indent=2))
+        zf.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
 
         # 2. Pacientes CSV
-        out = _io.StringIO()
-        w = _csv_mod.writer(out)
+        out = io.StringIO()
+        w = csv.writer(out)
         w.writerow([
             "id", "nombre", "telefono", "email", "documento", "estado",
             "tratamiento_actual", "alergias", "notas_basicas",
@@ -4553,8 +4552,8 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
         zf.writestr("pacientes.csv", out.getvalue())
 
         # 3. Citas CSV
-        out = _io.StringIO()
-        w = _csv_mod.writer(out)
+        out = io.StringIO()
+        w = csv.writer(out)
         w.writerow(["id", "paciente_id", "fecha_hora", "duracion_min", "estado", "motivo", "notas"])
         async with async_session() as session:
             citas = list((await session.execute(
@@ -4568,8 +4567,8 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
         zf.writestr("citas.csv", out.getvalue())
 
         # 4. Mensajes CSV (90 días)
-        out = _io.StringIO()
-        w = _csv_mod.writer(out)
+        out = io.StringIO()
+        w = csv.writer(out)
         w.writerow(["id", "paciente_id", "canal", "direccion", "contenido", "leido", "respondido_por", "timestamp"])
         async with async_session() as session:
             mensajes = list((await session.execute(
@@ -4587,13 +4586,13 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
         zf.writestr("mensajes.csv", out.getvalue())
 
         # 5. Llamadas CSV
-        out = _io.StringIO()
-        w = _csv_mod.writer(out)
+        out = io.StringIO()
+        w = csv.writer(out)
         w.writerow(["id", "paciente_id", "direccion", "duracion_seg", "resultado", "notas", "timestamp"])
         async with async_session() as session:
             llamadas = list((await session.execute(
                 select(Llamada).where(Llamada.clinica_id == clinica.id)
-                .where(Llamada.timestamp >= ahora - _td(days=365))
+                .where(Llamada.timestamp >= ahora - timedelta(days=365))
             )).scalars().all())
         for l in llamadas:
             w.writerow([
@@ -4603,8 +4602,8 @@ async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
         zf.writestr("llamadas.csv", out.getvalue())
 
         # 6. Plantillas
-        out = _io.StringIO()
-        w = _csv_mod.writer(out)
+        out = io.StringIO()
+        w = csv.writer(out)
         w.writerow(["id", "titulo", "categoria", "contenido", "usos", "creado_en"])
         async with async_session() as session:
             plantillas = list((await session.execute(
@@ -5521,7 +5520,7 @@ async def importar_pacientes_procesar(
         return RedirectResponse("/clinic/login", status_code=303)
 
     contenido = (await archivo.read()).decode("utf-8", errors="replace")
-    reader = _csv_mod.DictReader(StringIO(contenido))
+    reader = csv.DictReader(StringIO(contenido))
     # Normalizar headers
     if reader.fieldnames:
         reader.fieldnames = [(h or "").lower().strip() for h in reader.fieldnames]
@@ -5594,7 +5593,7 @@ async def exportar_pacientes(clinic_session: Optional[str] = Cookie(None)):
         )).scalars().all())
 
     output = StringIO()
-    writer = _csv_mod.writer(output)
+    writer = csv.writer(output)
     writer.writerow(["nombre", "telefono", "email", "documento", "tratamiento",
                      "estado", "alergias", "notas", "fuente",
                      "primer_contacto", "ultimo_contacto"])
@@ -5949,7 +5948,6 @@ async def superadmin_detalle_clinica(
             select(UsuarioClinic).where(UsuarioClinic.clinica_id == clinica_id)
         )).scalars().all())
 
-    def esc(s): return html.escape(s or "", quote=True)
     estado_text = "SUSPENDIDA ⏸️" if c.congelada else "ACTIVA ●"
     estado_color = "#EF4444" if c.congelada else "#10B981"
 
@@ -6296,7 +6294,7 @@ async def nueva_cita_form(clinic_session: Optional[str] = Cookie(None)):
         for p in pacientes
     )
     from datetime import datetime as _dt
-    fecha_minima = _dt.now().strftime("%Y-%m-%dT%H:%M")
+    fecha_minima = datetime.now().strftime("%Y-%m-%dT%H:%M")
     calendar_conectado = bool(clinica.google_calendar_id)
 
     return HTMLResponse(f"""<!DOCTYPE html>

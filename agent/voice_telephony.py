@@ -35,7 +35,6 @@ import os
 import json
 import asyncio
 import logging
-import base64
 from typing import Optional, AsyncIterator
 from datetime import datetime
 import httpx
@@ -106,7 +105,6 @@ async def twilio_iniciar_call(
 
     # Twilio REST API — POST a /Accounts/{SID}/Calls.json
     api_url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Calls.json"
-    auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
 
     data = {
         "To": to_number,
@@ -121,12 +119,9 @@ async def twilio_iniciar_call(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(
-                api_url,
-                data=data,
-                headers={"Authorization": f"Basic {auth}"},
-            )
+        # httpx maneja Basic Auth nativo — sin base64 manual
+        async with httpx.AsyncClient(timeout=15.0, auth=(sid, token)) as client:
+            r = await client.post(api_url, data=data)
         if r.status_code in (200, 201):
             j = r.json()
             return {

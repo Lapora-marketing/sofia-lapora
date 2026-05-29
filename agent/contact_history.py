@@ -68,14 +68,20 @@ async def obtener_historial_unificado(
     desde = datetime.utcnow() - timedelta(days=dias_atras)
     eventos: list[dict] = []
 
+    # Chats y llamadas son queries independientes — paralelas
+    import asyncio
     if clinica_id is None:
         # === Lapora CRM ===
-        await _cargar_chats_lapora(eventos, tel_limpio, desde)
-        await _cargar_llamadas(eventos, tel_limpio, clinica_id=None, desde=desde)
+        await asyncio.gather(
+            _cargar_chats_lapora(eventos, tel_limpio, desde),
+            _cargar_llamadas(eventos, tel_limpio, clinica_id=None, desde=desde),
+        )
     else:
         # === Clínica multi-tenant ===
-        await _cargar_chats_clinica(eventos, tel_limpio, clinica_id, desde)
-        await _cargar_llamadas(eventos, tel_limpio, clinica_id=clinica_id, desde=desde)
+        await asyncio.gather(
+            _cargar_chats_clinica(eventos, tel_limpio, clinica_id, desde),
+            _cargar_llamadas(eventos, tel_limpio, clinica_id=clinica_id, desde=desde),
+        )
 
     # Orden cronológico ASC
     eventos.sort(key=lambda e: e.get("fecha") or datetime.min)

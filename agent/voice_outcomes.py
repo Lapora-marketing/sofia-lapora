@@ -235,22 +235,9 @@ Analiza esta llamada y responde en formato JSON."""
 
 
 def _parsear_json(texto: str) -> dict:
-    """Parsea JSON de Claude tolerando ```json fences."""
-    import re
-    if not texto:
-        return {}
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", texto, re.DOTALL)
-    if m:
-        texto = m.group(1)
-    else:
-        start = texto.find("{")
-        end = texto.rfind("}")
-        if start >= 0 and end > start:
-            texto = texto[start:end + 1]
-    try:
-        return json.loads(texto)
-    except json.JSONDecodeError:
-        return {}
+    """Parsea JSON de Claude. Delega al helper compartido."""
+    from agent.claude_utils import parsear_json_claude
+    return parsear_json_claude(texto)
 
 
 # ════════════════════════════════════════════════════════════

@@ -85,6 +85,34 @@ class Clinica(Base):
     proximo_cobro_en: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     razon_freeze: Mapped[str] = mapped_column(String(200), default="", nullable=True)
 
+    # ═══ Helpers de plan / estado (consolidan checks duplicados) ═══
+    def es_studio(self) -> bool:
+        """True si la clínica tiene plan Studio (caso-insensitive)."""
+        return (self.plan or "").lower() == "studio"
+
+    def es_pro(self) -> bool:
+        """True si la clínica tiene plan Pro."""
+        return (self.plan or "").lower() == "pro"
+
+    def es_paga(self) -> bool:
+        """True si tiene plan paga (Pro o Studio)."""
+        return self.es_pro() or self.es_studio()
+
+    def operativa(self) -> bool:
+        """True si la clínica está operando normalmente (no congelada, activa).
+
+        Acepta trial como operativa — trials tienen acceso completo.
+        """
+        if self.congelada:
+            return False
+        if not self.activo:
+            return False
+        return (self.estado_pago or "") in ("trial", "activo", "manual")
+
+    def puede_usar_studio_features(self) -> bool:
+        """True si puede usar features Studio: plan studio + operativa."""
+        return self.es_studio() and self.operativa()
+
     # Suspensión / billing
     congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     motivo_suspension: Mapped[str] = mapped_column(String(300), default="", nullable=True)

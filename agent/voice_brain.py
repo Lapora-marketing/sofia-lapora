@@ -440,24 +440,13 @@ async def generar_turno(
 
 
 def _parsear_json_respuesta(texto: str) -> dict:
-    """Parsea el JSON de la respuesta de Claude. Tolera markdown ```json ... ```"""
-    if not texto:
-        return {}
-    # Quitar fences markdown
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", texto, re.DOTALL)
-    if m:
-        texto = m.group(1)
-    else:
-        # Buscar primer { hasta último }
-        start = texto.find("{")
-        end = texto.rfind("}")
-        if start >= 0 and end > start:
-            texto = texto[start:end + 1]
-    try:
-        return json.loads(texto)
-    except json.JSONDecodeError as e:
-        logger.warning(f"[voice_brain] JSON inválido de Claude: {e}. Texto: {texto[:200]}")
-        return {"respuesta": texto.strip()[:200], "end_call": False}
+    """Parsea JSON de Claude. Delega al helper compartido + fallback voice-specific."""
+    from agent.claude_utils import parsear_json_claude
+    data = parsear_json_claude(texto)
+    if data:
+        return data
+    # Fallback voice-specific: si no había JSON, devolver el texto como respuesta
+    return {"respuesta": (texto or "").strip()[:200], "end_call": False}
 
 
 # ════════════════════════════════════════════════════════════

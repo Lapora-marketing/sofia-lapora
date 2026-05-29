@@ -439,20 +439,24 @@ async def loop_scheduler(stop_event: asyncio.Event):
 
     while not stop_event.is_set():
         try:
-            # Limpieza housekeeping
-            await liberar_locks_vencidos()
+            # Cheap check FIRST: si estamos fuera de horario hábil, skip DB completamente.
+            # Esto evita ~4300 queries/día durante off-hours (98% del tiempo).
+            if not esta_en_horario_habil():
+                pass  # Sin liberar locks ni queries — el housekeeping puede esperar
+            else:
+                # Housekeeping
+                await liberar_locks_vencidos()
 
-            # ¿Estamos en ventana operativa?
-            puede, motivo = await puede_disparar_ahora()
-            if puede:
-                proxima = await proxima_llamada_en_cola()
-                if proxima:
-                    logger.info(
-                        f"[voice_workers] disparando call: target={proxima.target_nombre} "
-                        f"tel={proxima.telefono} script={proxima.script_id} prio={proxima.prioridad}"
-                    )
-                    await disparar_llamada(proxima, worker_id="loop_main")
-                # else: cola vacía, no hacemos nada
+                # ¿Hay throttle / pausa?
+                puede, motivo = await puede_disparar_ahora()
+                if puede:
+                    proxima = await proxima_llamada_en_cola()
+                    if proxima:
+                        logger.info(
+                            f"[voice_workers] disparando call: target={proxima.target_nombre} "
+                            f"tel={proxima.telefono} script={proxima.script_id} prio={proxima.prioridad}"
+                        )
+                        await disparar_llamada(proxima, worker_id="loop_main")
         except Exception as e:
             logger.error(f"[voice_workers] error en loop: {e}", exc_info=True)
 

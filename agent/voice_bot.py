@@ -274,16 +274,21 @@ async def twilio_stream(websocket: WebSocket, call_id: int):
             logger.warning(f"[voice WS] send a Twilio falló: {e}")
 
     async def hablar(texto: str):
-        """Sintetiza texto con ElevenLabs y manda los chunks a Twilio."""
+        """Sintetiza texto con ElevenLabs y manda los chunks a Twilio.
+
+        Twilio Media Streams bufferea internamente; ElevenLabs ya entrega
+        chunks al ritmo del audio. Sin sleep artificial — yield al event loop
+        con sleep(0) para no bloquear otras tasks (transcripts entrantes).
+        """
         async for chunk in tts.sintetizar(texto):
             if not chunk:
                 continue
-            # Dividir en frames pequeños (~160 bytes = 20ms a 8kHz μ-law)
+            # Dividir en frames de 160 bytes (= 20ms a 8kHz μ-law)
             for i in range(0, len(chunk), 160):
                 frame = chunk[i:i + 160]
                 if frame:
                     await enviar_audio_a_twilio(frame)
-                    await asyncio.sleep(0.018)  # marco temporal de 20ms
+            await asyncio.sleep(0)  # yield al loop sin bloquear
 
     async def procesar_turno_brain(transcript_persona: str, primer_turno: bool = False):
         """Llama al brain y emite la respuesta como voz."""

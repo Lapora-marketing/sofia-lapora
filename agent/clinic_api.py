@@ -77,7 +77,7 @@ async def _autenticar(
         raise HTTPException(status_code=410, detail="Clínica desactivada")
 
     # API solo disponible para plan Studio
-    if (clinica.plan or "").lower() != "studio":
+    if not clinica.es_studio():
         raise HTTPException(
             status_code=402,
             detail="REST API es exclusiva del plan Studio. Sube de plan para acceder.",

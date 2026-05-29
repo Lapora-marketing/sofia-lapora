@@ -73,8 +73,10 @@ def mercadopago_disponible() -> bool:
     return bool(mp_access_token())
 
 
-# Alias para mantener retrocompatibilidad con imports antiguos
-stripe_disponible = mercadopago_disponible
+# NOTA: Los campos en Clinica se llaman stripe_customer_id / stripe_subscription_id
+# por razones históricas (migración desde Stripe). Aquí guardamos los IDs de
+# MercadoPago (customer = payer_id, subscription = preapproval_id).
+# Renombrar las columnas requeriría una migración de BD — pendiente para futuro.
 
 
 # ════════════════════════════════════════════════════════════

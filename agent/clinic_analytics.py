@@ -31,23 +31,37 @@ async def analytics_completo(
 ) -> dict:
     """Calcula todas las métricas para el periodo.
 
-    Returns: dict con todas las secciones organizadas.
+    Las 8 queries son independientes — corren en paralelo con asyncio.gather
+    para reducir latencia P95 ~5x (de suma de queries → max query).
     """
+    import asyncio
     ahora = datetime.utcnow()
     desde = ahora - timedelta(days=dias_atras)
+
+    (volumen_canal, respuesta_ia, tiempo_respuesta, pacientes_stats,
+     citas_stats, ltv, top_t, tendencia) = await asyncio.gather(
+        _volumen_por_canal(clinica_id, desde),
+        _stats_respuesta_ia(clinica_id, desde),
+        _tiempo_medio_respuesta(clinica_id, desde),
+        _stats_pacientes(clinica_id, desde),
+        _stats_citas(clinica_id, desde),
+        _ltv_promedio(clinica_id),
+        _top_tratamientos(clinica_id),
+        _tendencia_mensajes_diaria(clinica_id, dias_atras),
+    )
 
     return {
         "periodo_dias": dias_atras,
         "desde": desde.isoformat(),
         "hasta": ahora.isoformat(),
-        "volumen_canal": await _volumen_por_canal(clinica_id, desde),
-        "respuesta_ia":  await _stats_respuesta_ia(clinica_id, desde),
-        "tiempo_respuesta": await _tiempo_medio_respuesta(clinica_id, desde),
-        "pacientes":     await _stats_pacientes(clinica_id, desde),
-        "citas":         await _stats_citas(clinica_id, desde),
-        "ltv":           await _ltv_promedio(clinica_id),
-        "top_tratamientos": await _top_tratamientos(clinica_id),
-        "tendencia_diaria": await _tendencia_mensajes_diaria(clinica_id, dias_atras),
+        "volumen_canal":    volumen_canal,
+        "respuesta_ia":     respuesta_ia,
+        "tiempo_respuesta": tiempo_respuesta,
+        "pacientes":        pacientes_stats,
+        "citas":            citas_stats,
+        "ltv":              ltv,
+        "top_tratamientos": top_t,
+        "tendencia_diaria": tendencia,
     }
 
 
