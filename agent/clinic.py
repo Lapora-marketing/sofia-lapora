@@ -1794,30 +1794,24 @@ async def responder_inbox(
         )).scalar_one_or_none()
         canal_resp = ultimo.canal if ultimo else "whatsapp"
 
-        # Enviar por Meta WhatsApp API si el canal es whatsapp y hay token de la clínica
+        # Enviar por Meta WhatsApp API usando el helper unificado
         if canal_resp == "whatsapp" and clinica.whatsapp_phone_id and clinica.whatsapp_token and paciente.telefono:
             try:
+                from agent.whatsapp_helper import enviar_mensaje_meta
+                # Normalizar número Colombia (+57 si trae 10 dígitos sin código país)
                 import re as _re_mod
-                import httpx as _httpx_mod
                 tel = _re_mod.sub(r"\D", "", paciente.telefono)
                 if not tel.startswith("57") and len(tel) == 10:
                     tel = f"57{tel}"
-                async with _httpx_mod.AsyncClient(timeout=20.0) as client:
-                    await client.post(
-                        f"https://graph.facebook.com/v21.0/{clinica.whatsapp_phone_id}/messages",
-                        headers={
-                            "Authorization": f"Bearer {clinica.whatsapp_token}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "messaging_product": "whatsapp",
-                            "to": tel,
-                            "type": "text",
-                            "text": {"body": contenido},
-                        },
-                    )
-            except Exception:
-                pass  # Si falla el envío externo, igual guardamos en BD
+                await enviar_mensaje_meta(
+                    phone_id=clinica.whatsapp_phone_id,
+                    token=clinica.whatsapp_token,
+                    telefono=tel,
+                    mensaje=contenido,
+                    contexto_log=f"clinica={clinica.id}/manual-reply",
+                )
+            except Exception as _e:
+                logger.warning(f"[clinic] WA manual reply falló: {_e}")
 
         # Siempre guardar el mensaje en el inbox para el historial
         session.add(MensajeUnificado(
@@ -2149,6 +2143,7 @@ async def detalle_paciente(
         </div>
         <div style="display:flex;gap:10px;">
           {f'<a href="https://wa.me/{html.escape(paciente.telefono.replace("+", "").replace(" ", ""))}" target="_blank" class="btn btn-primary" style="background:#25D366;box-shadow:0 4px 12px rgba(37,211,102,0.25);">💬 WhatsApp</a>' if paciente.telefono else ''}
+          <a href="/clinic/app/pacientes/{paciente.id}/timeline" class="btn btn-ghost" style="border-color:#8B5CF6;color:#8B5CF6;">📜 Timeline cross-canal</a>
           <a href="/clinic/app/pacientes/{paciente.id}/editar" class="btn btn-ghost">✏️ Editar</a>
         </div>
       </div>
@@ -2192,6 +2187,254 @@ async def detalle_paciente(
           <div style="font-size:28px;font-weight:800;color:var(--green);margin-top:4px;">${paciente.valor_total:,}</div>
         </div>
       </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.get("/app/pacientes/{paciente_id}/timeline", response_class=HTMLResponse)
+async def vista_timeline_paciente(
+    paciente_id: int,
+    filtro: Optional[str] = "todos",
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Timeline unificado cross-canal: chats + llamadas + citas en orden cronológico.
+
+    Hace visible la memoria cross-canal que ya usa la IA para responder.
+    Cada evento se muestra como burbuja distinta según canal:
+    - WhatsApp in (gris izq) / WhatsApp out (verde der)
+    - Instagram / Email (badges distintos)
+    - Llamada (card con outcome + transcript expandible)
+    - Cita agendada (card violeta)
+    """
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    # Cargar paciente (aislamiento multi-tenant CRÍTICO)
+    async with async_session() as session:
+        paciente = (await session.execute(
+            select(Paciente)
+            .where(Paciente.id == paciente_id)
+            .where(Paciente.clinica_id == clinica.id)
+        )).scalar_one_or_none()
+        if not paciente:
+            return RedirectResponse("/clinic/app/pacientes", status_code=303)
+
+        # Cargar citas del paciente
+        citas = list((await session.execute(
+            select(CitaClinic)
+            .where(CitaClinic.paciente_id == paciente_id)
+            .order_by(desc(CitaClinic.fecha_hora))
+            .limit(30)
+        )).scalars().all())
+
+    # Cargar historial unificado cross-canal
+    from agent.contact_history import obtener_historial_unificado
+    eventos = await obtener_historial_unificado(
+        paciente.telefono or "",
+        clinica_id=clinica.id,
+        dias_atras=365,
+        limite=200,
+    )
+
+    # Agregar citas como eventos del timeline
+    for cita in citas:
+        eventos.append({
+            "tipo": "cita",
+            "direccion": "out",
+            "fecha": cita.fecha_hora,
+            "outcome": cita.estado,
+            "duracion_min": cita.duracion_min or 30,
+            "motivo": cita.motivo or "",
+            "cita_id": cita.id,
+        })
+
+    # Re-ordenar cronológicamente (más viejo arriba, más nuevo abajo)
+    eventos.sort(key=lambda e: e.get("fecha") or datetime.min)
+
+    # Filtrado
+    filtro = filtro if filtro in ("todos", "chats", "llamadas", "citas") else "todos"
+    if filtro == "chats":
+        eventos = [e for e in eventos if e["tipo"] == "chat"]
+    elif filtro == "llamadas":
+        eventos = [e for e in eventos if e["tipo"] == "call"]
+    elif filtro == "citas":
+        eventos = [e for e in eventos if e["tipo"] == "cita"]
+
+    def esc(s):
+        return html.escape(str(s or ""), quote=True)
+
+    # Counters por canal (para chips)
+    n_chat = sum(1 for e in eventos if e["tipo"] == "chat")
+    n_call = sum(1 for e in eventos if e["tipo"] == "call")
+    n_cita = sum(1 for e in eventos if e["tipo"] == "cita")
+
+    # Renderizar eventos
+    fecha_anterior = None
+    bubbles_html = ""
+
+    OUTCOME_LABELS = {
+        "interested": "✅ Interesado",
+        "not_interested": "❌ No interesado",
+        "callback": "📞 Pidió callback",
+        "voicemail": "📨 Buzón",
+        "no_answer": "⏸ No contestó",
+        "opt_out": "🚫 Opt-out",
+        "failed": "⚠ Falló",
+        "agendada": "📅 Agendada",
+        "confirmada": "✅ Confirmada",
+        "completada": "✓ Completada",
+        "cancelada": "❌ Cancelada",
+        "no_show": "🚫 No vino",
+    }
+    OUTCOME_COLORS = {
+        "interested": "#10B981", "callback": "#3B82F6",
+        "not_interested": "#9CA3AF", "voicemail": "#F59E0B",
+        "no_answer": "#FCA5A5", "opt_out": "#7C2D12",
+        "failed": "#EF4444",
+        "agendada": "#8B5CF6", "confirmada": "#10B981",
+        "completada": "#10B981", "cancelada": "#9CA3AF",
+        "no_show": "#EF4444",
+    }
+
+    for e in eventos:
+        # Separador de día si cambió
+        fecha = e.get("fecha")
+        if fecha and (not fecha_anterior or fecha.date() != fecha_anterior.date()):
+            dias = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+            meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+                     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+            dia_txt = f"{dias[fecha.weekday()]} {fecha.day} de {meses[fecha.month-1]}"
+            bubbles_html += f'<div style="display:flex;align-items:center;gap:14px;margin:24px 0 12px;"><div style="flex:1;height:1px;background:var(--border);"></div><span style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;">{dia_txt}</span><div style="flex:1;height:1px;background:var(--border);"></div></div>'
+            fecha_anterior = fecha
+
+        hora_str = fecha.strftime("%I:%M %p").lstrip("0").lower() if fecha else "?"
+
+        if e["tipo"] == "chat":
+            # Burbujas WhatsApp/IG estilo conversación
+            canal = (e.get("canal") or "whatsapp").lower()
+            es_in = e["direccion"] == "in"
+            canal_color = {"whatsapp": "#25D366", "instagram": "#E1306C", "email": "#3B82F6"}.get(canal, "#6B7280")
+            canal_icon = {"whatsapp": "💬", "instagram": "📷", "email": "✉"}.get(canal, "·")
+
+            bg = "white" if es_in else canal_color
+            color = "#111827" if es_in else "white"
+            align = "flex-start" if es_in else "flex-end"
+            border_radius = "4px 14px 14px 14px" if es_in else "14px 4px 14px 14px"
+            quien = "Paciente" if es_in else f"{esc(clinica.nombre[:30])}"
+            respondido = e.get("respondido_por", "")
+            badge_ia = ' <span style="background:rgba(139,92,246,0.2);color:white;padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;">IA</span>' if respondido == "ia" else ""
+
+            bubbles_html += f'''
+            <div style="display:flex;justify-content:{align};margin-bottom:8px;">
+                <div style="max-width:75%;">
+                    <div style="font-size:11px;color:var(--text-soft);margin-bottom:3px;padding:0 8px;">{canal_icon} {quien}{badge_ia} · {hora_str}</div>
+                    <div style="background:{bg};color:{color};padding:10px 14px;border-radius:{border_radius};border:1px solid {bg if not es_in else 'var(--border)'};font-size:14px;line-height:1.45;word-wrap:break-word;white-space:pre-wrap;">{esc(e.get('contenido', ''))}</div>
+                </div>
+            </div>'''
+
+        elif e["tipo"] == "call":
+            # Card especial para llamada
+            outcome = e.get("outcome", "")
+            oc_color = OUTCOME_COLORS.get(outcome, "#6B7280")
+            oc_label = OUTCOME_LABELS.get(outcome, outcome.upper() if outcome else "Llamada")
+            duracion = e.get("duracion_seg", 0)
+            dur_min = duracion // 60
+            dur_sec = duracion % 60
+            dur_str = f"{dur_min}m {dur_sec}s" if dur_min else f"{dur_sec}s"
+            resumen = esc(e.get("resumen", "")[:300])
+            transcript_id = f"tr-{e.get('source_id', 0)}"
+            transcript_full = esc((e.get("transcript_preview") or "")[:2000]).replace("\n", "<br>")
+            mostrar_transcript = bool(transcript_full)
+
+            bubbles_html += f'''
+            <div style="display:flex;justify-content:center;margin:14px 0;">
+                <div style="background:linear-gradient(135deg,#FAFAFF,white);border:2px solid {oc_color};border-radius:14px;padding:14px 18px;width:100%;max-width:600px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <div style="background:{oc_color};color:white;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;">📞</div>
+                            <div>
+                                <strong style="font-size:13px;color:#111827;">SofIA llamó al paciente</strong>
+                                <div style="font-size:11px;color:var(--text-soft);">{hora_str} · duración {dur_str}</div>
+                            </div>
+                        </div>
+                        <span style="background:{oc_color}22;color:{oc_color};padding:3px 12px;border-radius:14px;font-size:11px;font-weight:700;">{oc_label}</span>
+                    </div>
+                    {f'<div style="font-size:13px;color:#374151;line-height:1.5;background:white;padding:10px 12px;border-radius:8px;border:1px solid #E5E7EB;margin-bottom:8px;"><strong style="color:#6B7280;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;">Resumen IA:</strong><br>{resumen}</div>' if resumen else ''}
+                    {f'<details style="margin-top:6px;"><summary style="font-size:12px;color:#6B7280;cursor:pointer;font-weight:600;">▸ Ver transcript completo</summary><div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px;padding:10px 12px;margin-top:8px;font-size:12px;color:#374151;line-height:1.6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-height:300px;overflow-y:auto;">{transcript_full}</div></details>' if mostrar_transcript else ''}
+                </div>
+            </div>'''
+
+        elif e["tipo"] == "cita":
+            outcome = e.get("outcome", "agendada")
+            oc_color = OUTCOME_COLORS.get(outcome, "#8B5CF6")
+            oc_label = OUTCOME_LABELS.get(outcome, outcome)
+            motivo = esc(e.get("motivo", ""))
+            dur = e.get("duracion_min", 30)
+            bubbles_html += f'''
+            <div style="display:flex;justify-content:center;margin:12px 0;">
+                <div style="background:white;border:1px dashed {oc_color};border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:12px;font-size:13px;">
+                    <span style="font-size:18px;">📅</span>
+                    <div>
+                        <strong style="color:{oc_color};">{oc_label}</strong> · {hora_str} · {dur} min
+                        {f' · <em style="color:var(--text-soft);">{motivo}</em>' if motivo else ''}
+                    </div>
+                </div>
+            </div>'''
+
+    if not bubbles_html:
+        bubbles_html = '<div style="text-align:center;padding:80px 20px;color:#9CA3AF;"><div style="font-size:42px;margin-bottom:10px;">💬</div><strong style="font-size:16px;">Sin interacciones en el rango seleccionado</strong></div>'
+
+    # Chip de filtro
+    def _chip(label, value, count, color):
+        activo = filtro == value
+        if activo:
+            return f'<a href="?filtro={value}" style="background:{color};color:white;padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;">{label} ({count})</a>'
+        return f'<a href="?filtro={value}" style="background:white;color:{color};border:1px solid {color}55;padding:6px 14px;border-radius:14px;font-size:12px;font-weight:600;text-decoration:none;">{label} ({count})</a>'
+
+    chips = " ".join([
+        _chip("Todos", "todos", n_chat + n_call + n_cita, "#6B7280"),
+        _chip("💬 Chats", "chats", n_chat, "#25D366"),
+        _chip("📞 Llamadas", "llamadas", n_call, "#3B82F6"),
+        _chip("📅 Citas", "citas", n_cita, "#8B5CF6"),
+    ])
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Timeline - {esc(paciente.nombre)}</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:20px;flex-wrap:wrap;gap:14px;">
+        <div>
+          <a href="/clinic/app/pacientes/{paciente_id}" style="font-size:12px;color:var(--text-soft);text-decoration:none;">← Volver al paciente</a>
+          <h1 style="font-size:26px;font-weight:800;margin-top:4px;">📜 Timeline · {esc(paciente.nombre)}</h1>
+          <p style="color:var(--text-soft);font-size:13px;">{esc(paciente.telefono or '')} · {esc(paciente.tratamiento_actual or 'Sin tratamiento')} · Estado: <strong>{esc(paciente.estado)}</strong></p>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <a href="https://wa.me/{esc((paciente.telefono or '').replace('+',''))}" target="_blank" class="btn btn-ghost" style="font-size:13px;">💬 WhatsApp</a>
+          <a href="/clinic/app/citas/nueva?paciente_id={paciente_id}" class="btn btn-primary" style="font-size:13px;">📅 Agendar</a>
+        </div>
+      </div>
+
+      <!-- Filtros -->
+      <div style="background:white;border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:20px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <span style="font-size:11px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.05em;margin-right:6px;">Filtrar:</span>
+        {chips}
+      </div>
+
+      <!-- Timeline -->
+      <div style="max-width:780px;margin:0 auto;">
+        {bubbles_html}
+      </div>
+
+      <p style="text-align:center;color:var(--text-soft);font-size:11px;margin:30px 0 10px;">
+        SofIA usa este historial completo cuando responde · cross-canal automático
+      </p>
     </main>
   </div>
 </body></html>""")

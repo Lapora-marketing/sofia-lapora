@@ -3243,27 +3243,12 @@ def _wa_construir_mensaje(nombre_doctor: str, nombre_negocio: str, cupon: str) -
 
 
 async def _wa_enviar_via_meta(telefono: str, mensaje: str) -> tuple[bool, str]:
-    """Envia via Meta Cloud API usando las credenciales del bot."""
-    token = os.getenv("META_ACCESS_TOKEN", "")
-    phone_id = os.getenv("META_PHONE_NUMBER_ID", "")
-    if not token or not phone_id:
-        return False, "Faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID en Railway"
-    url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": telefono,
-        "type": "text",
-        "text": {"preview_url": True, "body": mensaje},
-    }
-    try:
-        async with _httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.post(url, json=payload, headers=headers)
-        if r.status_code == 200:
-            return True, r.json().get("messages", [{}])[0].get("id", "OK")
-        return False, f"HTTP {r.status_code}: {r.text[:200]}"
-    except Exception as e:
-        return False, f"Error: {e}"
+    """Envia via Meta Cloud API. Wrapper sobre whatsapp_helper (refactor DRY)."""
+    from agent.whatsapp_helper import enviar_mensaje_lapora
+    resultado = await enviar_mensaje_lapora(telefono, mensaje, contexto_log="dashboard-outreach")
+    if resultado["exito"]:
+        return True, resultado.get("message_id", "OK")
+    return False, resultado.get("error", "Error desconocido")
 
 
 @router.get("/prospectos/whatsapp", response_class=HTMLResponse)
