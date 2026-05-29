@@ -3769,7 +3769,7 @@ async def vista_billing(
         banner_estado = ""
 
     if not stripe_disponible():
-        stripe_warning = '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;padding:14px;border-radius:10px;margin-bottom:20px;font-size:13px;">⚠ El proveedor de pagos (Stripe) no está configurado todavía. Contactá a soporte para suscribirte manualmente: <a href="https://wa.me/573228783019" style="color:#92400E;font-weight:700;">WhatsApp</a></div>'
+        stripe_warning = '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;padding:14px;border-radius:10px;margin-bottom:20px;font-size:13px;">⚠ El proveedor de pagos (MercadoPago) no está configurado todavía. Contactá a soporte para suscribirte manualmente: <a href="https://wa.me/573228783019" style="color:#92400E;font-weight:700;">WhatsApp</a></div>'
     else:
         stripe_warning = ""
 
@@ -3785,25 +3785,26 @@ async def vista_billing(
     es_pro_actual = clinica.plan == "pro" and clinica.estado_pago == "activo"
     es_studio_actual = clinica.plan == "studio" and clinica.estado_pago == "activo"
 
-    def plan_card(plan_id: str, nombre: str, precio: int, features: list[str], es_actual: bool, popular: bool = False):
+    def plan_card(plan_id: str, nombre: str, precio_usd: int, features: list[str], es_actual: bool, popular: bool = False):
         color = "#8B5CF6" if plan_id == "studio" else "#FF3B30"
         border = f"2px solid {color}" if (popular or es_actual) else "1px solid #E5E7EB"
         badge = '<span style="position:absolute;top:-12px;right:18px;background:#FF3B30;color:white;padding:4px 14px;border-radius:14px;font-size:11px;font-weight:800;">MÁS POPULAR</span>' if popular else ''
         if es_actual:
             badge = '<span style="position:absolute;top:-12px;right:18px;background:#10B981;color:white;padding:4px 14px;border-radius:14px;font-size:11px;font-weight:800;">PLAN ACTUAL</span>'
         feats_html = "".join(f'<li style="display:flex;align-items:start;gap:8px;margin-bottom:6px;font-size:13px;"><span style="color:{color};font-weight:700;">✓</span> <span>{esc(f)}</span></li>' for f in features)
+        precio_cop = precio_usd * 4000  # USD_A_COP
         if es_actual:
             cta = '<button disabled style="background:#9CA3AF;color:white;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:not-allowed;width:100%;">Plan actual</button>'
         else:
             label = "Subir a " + nombre if (es_pro_actual and plan_id == "studio") else nombre
-            cta = f'<form method="post" action="/clinic/app/billing/upgrade" style="margin:0;"><input type="hidden" name="plan" value="{plan_id}"><button type="submit" style="background:{color};color:white;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer;width:100%;font-size:14px;">{esc(label)} — ${precio} USD/mes</button></form>'
+            cta = f'<form method="post" action="/clinic/app/billing/upgrade" style="margin:0;"><input type="hidden" name="plan" value="{plan_id}"><button type="submit" style="background:{color};color:white;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer;width:100%;font-size:14px;">{esc(label)} — ${precio_cop:,} COP/mes</button></form>'
 
         return f'''
         <div style="background:white;border:{border};border-radius:18px;padding:24px;position:relative;">
             {badge}
             <div style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">{esc(nombre)}</div>
-            <div style="font-size:36px;font-weight:900;margin-bottom:2px;">${precio}<span style="font-size:14px;color:var(--text-soft);font-weight:500;"> USD/mes</span></div>
-            <div style="font-size:12px;color:var(--text-soft);margin-bottom:18px;">~${precio * 4000:,} COP/mes</div>
+            <div style="font-size:36px;font-weight:900;margin-bottom:2px;">${precio_cop:,}<span style="font-size:14px;color:var(--text-soft);font-weight:500;"> COP/mes</span></div>
+            <div style="font-size:12px;color:var(--text-soft);margin-bottom:18px;">≈ ${precio_usd} USD/mes · cobrado por MercadoPago</div>
             <ul style="list-style:none;padding:0;margin:0 0 20px;">{feats_html}</ul>
             {cta}
         </div>'''
@@ -3850,10 +3851,11 @@ async def vista_billing(
 
       <div style="margin-top:32px;padding:18px;background:#F9FAFB;border-radius:12px;font-size:13px;color:#6B7280;line-height:1.7;">
         <strong style="color:#374151;">💡 Cómo funciona:</strong><br>
-        • Te cobramos en USD con tarjeta internacional vía Stripe<br>
-        • Si tu tarjeta falla, te avisamos por email y reintentamos 3 días antes de pausar<br>
-        • Podés cancelar cuando quieras desde "Gestionar suscripción" — sin penalidad<br>
-        • Para pago por PSE o transferencia local, escribinos: <a href="https://wa.me/573228783019" style="color:#FF3B30;font-weight:600;">WhatsApp +57 322 878 3019</a>
+        • Cobramos en COP vía <strong>MercadoPago</strong> (tarjeta crédito/débito o cuenta MercadoPago)<br>
+        • Si tu tarjeta falla, MercadoPago reintenta automáticamente 3 días<br>
+        • Podés cancelar cuando quieras desde tu cuenta MercadoPago — sin penalidad<br>
+        • Para pago por transferencia local Bancolombia, escribinos: <a href="https://wa.me/573228783019" style="color:#FF3B30;font-weight:600;">WhatsApp +57 322 878 3019</a><br>
+        <span style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:#9CA3AF;">🔒 Pagos procesados por MercadoPago. Tus datos de tarjeta no llegan a Lapora.</span>
       </div>
     </main>
   </div>
@@ -3915,32 +3917,31 @@ async def billing_success(clinica: Optional[int] = None, plan: Optional[str] = N
 
 @router.post("/billing/webhook")
 async def billing_webhook(request: Request):
-    """Recibe eventos de Stripe. VERIFICA SIGNATURE antes de procesar.
+    """Recibe notificaciones de MercadoPago. VERIFICA FIRMA antes de procesar.
 
-    Configurar en Stripe Dashboard → Webhooks:
+    Configurar en MercadoPago Developer Dashboard → Webhooks → IPN:
     URL: https://sofia-lapora-production.up.railway.app/clinic/billing/webhook
-    Eventos: checkout.session.completed, invoice.payment_succeeded,
-             invoice.payment_failed, customer.subscription.deleted,
-             customer.subscription.updated
+    Eventos: subscription_preapproval, subscription_authorized_payment
     """
     from agent.clinic_billing import verificar_webhook_signature, procesar_webhook
     import json as _json
 
     body = await request.body()
-    signature = request.headers.get("stripe-signature", "")
+    signature = request.headers.get("x-signature", "")
+    request_id = request.headers.get("x-request-id", "")
 
-    # Verificar firma
-    if not verificar_webhook_signature(body, signature):
-        logger.warning(f"[billing webhook] firma inválida desde {request.client.host if request.client else '?'}")
+    # Verificar firma (si está configurada). Acepta sin secret en dev.
+    if not verificar_webhook_signature(body, signature, request_id):
+        logger.warning(f"[billing webhook MP] firma inválida desde {request.client.host if request.client else '?'}")
         raise HTTPException(status_code=400, detail="Firma inválida")
 
     try:
-        event = _json.loads(body)
+        notification = _json.loads(body)
     except Exception:
         raise HTTPException(status_code=400, detail="JSON inválido")
 
-    resultado = await procesar_webhook(event)
-    logger.info(f"[billing webhook] resultado: {resultado}")
+    resultado = await procesar_webhook(notification)
+    logger.info(f"[billing webhook MP] resultado: {resultado}")
     return {"received": True, "result": resultado}
 
 

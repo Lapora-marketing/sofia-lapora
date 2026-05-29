@@ -1,32 +1,31 @@
 # -*- coding: utf-8 -*-
-# agent/clinic_billing.py — Monetización con Stripe
+# agent/clinic_billing.py — Monetización con MercadoPago Preapproval (Colombia)
 # Lapora Marketing Digital — Sprint Monetización v1
 
 """
-Integración Stripe para suscripciones recurrentes.
+Integración MercadoPago Preapproval para suscripciones recurrentes en Colombia.
 
-Funcionalidades:
-1. checkout_session_url(clinica, plan) → URL del Stripe Checkout
-2. portal_url(clinica) → URL del Stripe Customer Portal (cambiar tarjeta, cancelar)
-3. webhook_event(payload, sig) → procesa eventos Stripe (paid, failed, canceled)
-4. sincronizar_desde_stripe(clinica) → fuerza sync del estado
+Por qué MercadoPago (no Stripe):
+- Stripe NO acepta empresas colombianas como merchants
+- MercadoPago Preapproval es el estándar de SaaS recurrente en LATAM
+- Acepta tarjeta crédito/débito + cuenta MercadoPago
+- Comisión 3.49% + IVA
+- Hosted checkout (sin widget JS complicado)
 
 Configuración por env vars (en Railway):
-- STRIPE_SECRET_KEY            (sk_live_... o sk_test_...)
-- STRIPE_WEBHOOK_SECRET        (whsec_... de Dashboard → Webhooks)
-- STRIPE_PRICE_PRO             (price_... del plan Pro $100/mes)
-- STRIPE_PRICE_STUDIO          (price_... del plan Studio $250/mes)
-- PUBLIC_BASE_URL              (para success/cancel URLs, default Railway)
+- MERCADOPAGO_ACCESS_TOKEN     (APP_USR-... de developers.mercadopago.com)
+- MERCADOPAGO_WEBHOOK_SECRET   (key generada en Tu cuenta → Webhooks)
+- PUBLIC_BASE_URL              (para back_url, default Railway)
 
-Flow típico:
+Flow:
 1. Clínica en trial → click "Subir a Pro" en /clinic/app/billing
-2. Backend crea Stripe Checkout Session → redirect a Stripe-hosted page
-3. Cliente pega tarjeta y paga
-4. Stripe redirige a /clinic/billing/success?clinica=...
-5. Stripe envía webhook checkout.session.completed
-6. Webhook actualiza clinica.estado_pago=activo + stripe_subscription_id
-7. Renovaciones mensuales: webhook invoice.payment_succeeded
-8. Fallo de pago: webhook invoice.payment_failed → congelar
+2. Backend crea Preapproval en MercadoPago → URL del checkout hosted
+3. Cliente entra a MercadoPago.com, conecta tarjeta o cuenta MP
+4. MercadoPago redirige a /clinic/billing/success
+5. MercadoPago envía webhook (notificación) con el preapproval_id
+6. Webhook activa estado_pago=activo + guarda preapproval_id
+7. MercadoPago cobra automáticamente cada mes
+8. Webhook authorized_payment.created por cada cobro mensual
 """
 
 import os
@@ -47,364 +46,390 @@ PRECIOS_USD = {
     "studio": 250,
 }
 
+# Conversión aproximada para mostrar al cliente.
+# MercadoPago Colombia cobra en COP, así que convertimos.
+USD_A_COP = 4000  # ajustable según tasa actual
 
-def stripe_secret_key() -> Optional[str]:
-    return os.getenv("STRIPE_SECRET_KEY") or None
+PRECIOS_COP = {
+    "pro":    PRECIOS_USD["pro"]    * USD_A_COP,    # 400.000 COP
+    "studio": PRECIOS_USD["studio"] * USD_A_COP,    # 1.000.000 COP
+}
 
 
-def stripe_webhook_secret() -> Optional[str]:
-    return os.getenv("STRIPE_WEBHOOK_SECRET") or None
+def mp_access_token() -> Optional[str]:
+    return os.getenv("MERCADOPAGO_ACCESS_TOKEN") or None
 
 
-def stripe_price_id(plan: str) -> Optional[str]:
-    """Devuelve el price_id de Stripe según el plan."""
-    plan = (plan or "").lower()
-    if plan == "pro":
-        return os.getenv("STRIPE_PRICE_PRO") or None
-    if plan == "studio":
-        return os.getenv("STRIPE_PRICE_STUDIO") or None
-    return None
+def mp_webhook_secret() -> Optional[str]:
+    return os.getenv("MERCADOPAGO_WEBHOOK_SECRET") or None
 
 
 def base_url_publica() -> str:
     return os.getenv("PUBLIC_BASE_URL", "https://sofia-lapora-production.up.railway.app").rstrip("/")
 
 
-def stripe_disponible() -> bool:
-    """True si las credenciales mínimas de Stripe están configuradas."""
-    return bool(stripe_secret_key())
+def mercadopago_disponible() -> bool:
+    """True si MercadoPago está configurado."""
+    return bool(mp_access_token())
+
+
+# Alias para mantener retrocompatibilidad con imports antiguos
+stripe_disponible = mercadopago_disponible
 
 
 # ════════════════════════════════════════════════════════════
-# HELPER GENÉRICO PARA STRIPE API
+# HELPER GENÉRICO PARA MERCADOPAGO API
 # ════════════════════════════════════════════════════════════
 
-async def _stripe_request(
+async def _mp_request(
     method: str,
     path: str,
-    form_data: Optional[dict] = None,
+    json_data: Optional[dict] = None,
 ) -> tuple[bool, dict, str]:
-    """Hace request a la API de Stripe. Retorna (exito, response_dict, error_msg).
+    """Request a MercadoPago API. Retorna (exito, response, error_msg)."""
+    token = mp_access_token()
+    if not token:
+        return False, {}, "MERCADOPAGO_ACCESS_TOKEN no configurado"
 
-    Stripe API usa form-urlencoded para POST.
-    """
-    key = stripe_secret_key()
-    if not key:
-        return False, {}, "STRIPE_SECRET_KEY no configurada"
-
-    url = f"https://api.stripe.com/v1{path}"
-    headers = {"Authorization": f"Bearer {key}"}
+    url = f"https://api.mercadopago.com{path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             if method.upper() == "POST":
-                r = await client.post(url, data=form_data or {}, headers=headers)
+                r = await client.post(url, json=json_data or {}, headers=headers)
+            elif method.upper() == "PUT":
+                r = await client.put(url, json=json_data or {}, headers=headers)
             else:
-                r = await client.get(url, params=form_data or {}, headers=headers)
+                r = await client.get(url, headers=headers)
         if 200 <= r.status_code < 300:
             return True, r.json(), ""
-        return False, {}, f"Stripe {r.status_code}: {r.text[:300]}"
+        return False, {}, f"MercadoPago {r.status_code}: {r.text[:300]}"
     except Exception as e:
         return False, {}, str(e)[:300]
 
 
 # ════════════════════════════════════════════════════════════
-# CHECKOUT SESSION — crear URL para que el cliente pague
+# PREAPPROVAL — Crear suscripción recurrente
 # ════════════════════════════════════════════════════════════
 
 async def crear_checkout_session(clinica, plan: str) -> tuple[bool, str, str]:
-    """Crea una Stripe Checkout Session.
+    """Crea un Preapproval (suscripción) en MercadoPago.
+
+    Retorna URL del init_point para redirect al cliente.
 
     Args:
         clinica: instancia de Clinica
         plan: "pro" | "studio"
 
     Returns:
-        (exito, checkout_url, error_msg)
+        (exito, init_point_url, error_msg)
     """
     plan = (plan or "").lower()
     if plan not in ("pro", "studio"):
         return False, "", "Plan inválido"
 
-    price = stripe_price_id(plan)
-    if not price:
-        return False, "", f"STRIPE_PRICE_{plan.upper()} no configurado en env vars"
+    if not mp_access_token():
+        return False, "", "MercadoPago no configurado (falta MERCADOPAGO_ACCESS_TOKEN)"
 
     base = base_url_publica()
-    success_url = f"{base}/clinic/billing/success?clinica={clinica.id}&plan={plan}"
-    cancel_url = f"{base}/clinic/app/billing?canceled=1"
+    monto_cop = PRECIOS_COP[plan]
 
-    # Pasamos clinica.id en metadata para identificar al recibir webhook
-    form = {
-        "mode": "subscription",
-        "payment_method_types[0]": "card",
-        "line_items[0][price]": price,
-        "line_items[0][quantity]": "1",
-        "success_url": success_url,
-        "cancel_url": cancel_url,
-        "client_reference_id": str(clinica.id),
-        "subscription_data[metadata][clinica_id]": str(clinica.id),
-        "subscription_data[metadata][plan]": plan,
-        "allow_promotion_codes": "true",
-    }
-    # Si ya tenemos stripe_customer_id reutilizarlo (mantiene historial)
-    if clinica.stripe_customer_id:
-        form["customer"] = clinica.stripe_customer_id
-    else:
-        # Pasar email del primer usuario para pre-llenar
-        from agent.memory import async_session
-        from agent.clinic_models import UsuarioClinic
-        from sqlalchemy import select
-        async with async_session() as session:
-            owner = (await session.execute(
-                select(UsuarioClinic)
-                .where(UsuarioClinic.clinica_id == clinica.id)
-                .where(UsuarioClinic.rol == "owner")
-                .limit(1)
-            )).scalar_one_or_none()
+    # Pre-llenar email del owner si lo tenemos
+    payer_email = ""
+    from agent.memory import async_session
+    from agent.clinic_models import UsuarioClinic
+    from sqlalchemy import select
+    async with async_session() as session:
+        owner = (await session.execute(
+            select(UsuarioClinic)
+            .where(UsuarioClinic.clinica_id == clinica.id)
+            .where(UsuarioClinic.rol == "owner")
+            .limit(1)
+        )).scalar_one_or_none()
         if owner:
-            form["customer_email"] = owner.email
+            payer_email = owner.email
 
-    exito, data, err = await _stripe_request("POST", "/checkout/sessions", form)
+    body = {
+        "reason": f"Lapora Clinic {plan.capitalize()} - Suscripción mensual",
+        "external_reference": f"clinica_{clinica.id}_{plan}",
+        "payer_email": payer_email,
+        "back_url": f"{base}/clinic/billing/success?clinica={clinica.id}&plan={plan}",
+        "auto_recurring": {
+            "frequency": 1,
+            "frequency_type": "months",
+            "transaction_amount": float(monto_cop),
+            "currency_id": "COP",
+        },
+        "status": "pending",
+    }
+
+    exito, data, err = await _mp_request("POST", "/preapproval", body)
     if not exito:
+        logger.error(f"[billing] preapproval creation falló: {err}")
         return False, "", err
 
-    return True, data.get("url", ""), ""
+    # MercadoPago devuelve init_point (URL del checkout hosted)
+    init_point = data.get("init_point", "")
+    preapproval_id = data.get("id", "")
+
+    if not init_point:
+        return False, "", "MercadoPago no devolvió init_point"
+
+    # Guardamos el preapproval_id provisional en BD para correlación
+    async with async_session() as session:
+        from agent.clinic_models import Clinica as _Clinica
+        c = (await session.execute(
+            select(_Clinica).where(_Clinica.id == clinica.id)
+        )).scalar_one()
+        c.stripe_subscription_id = preapproval_id  # reutilizamos el campo (nombre legacy)
+        await session.commit()
+
+    return True, init_point, ""
 
 
 # ════════════════════════════════════════════════════════════
-# CUSTOMER PORTAL — cliente cambia tarjeta, cancela, ve facturas
+# PORTAL CLIENTE — MercadoPago no tiene un "Customer Portal" como Stripe
+# pero podemos redirigir al cliente a su cuenta MP para gestionar
 # ════════════════════════════════════════════════════════════
 
 async def crear_portal_session(clinica) -> tuple[bool, str, str]:
-    """Crea Stripe Customer Portal session."""
-    if not clinica.stripe_customer_id:
-        return False, "", "Sin Stripe customer ID — primero hay que suscribirse"
+    """MercadoPago no tiene portal hosted como Stripe.
 
-    base = base_url_publica()
-    form = {
-        "customer": clinica.stripe_customer_id,
-        "return_url": f"{base}/clinic/app/billing",
-    }
-    exito, data, err = await _stripe_request("POST", "/billing_portal/sessions", form)
+    En su lugar:
+    - Si tiene preapproval activo → link directo a MP para ver/cancelar
+    - El cliente gestiona desde su cuenta MercadoPago
+
+    Returns: (exito, url, error)
+    """
+    sub_id = clinica.stripe_subscription_id  # preapproval_id
+    if not sub_id:
+        return False, "", "No tienes suscripción activa para gestionar"
+
+    # MercadoPago URL: el usuario logueado en su cuenta MP puede ver
+    # https://www.mercadopago.com.co/subscriptions
+    url = "https://www.mercadopago.com.co/subscriptions/list"
+    return True, url, ""
+
+
+async def cancelar_suscripcion(clinica) -> tuple[bool, str]:
+    """Cancela la suscripción MercadoPago vía API.
+
+    Returns: (exito, error_msg)
+    """
+    sub_id = clinica.stripe_subscription_id
+    if not sub_id:
+        return False, "Sin preapproval_id"
+
+    exito, data, err = await _mp_request(
+        "PUT", f"/preapproval/{sub_id}", {"status": "cancelled"}
+    )
     if not exito:
-        return False, "", err
-    return True, data.get("url", ""), ""
+        return False, err
+
+    # Update local
+    from agent.memory import async_session
+    from agent.clinic_models import Clinica as _Clinica
+    from sqlalchemy import select
+    async with async_session() as session:
+        c = (await session.execute(
+            select(_Clinica).where(_Clinica.id == clinica.id)
+        )).scalar_one()
+        c.estado_pago = "cancelado"
+        await session.commit()
+
+    return True, ""
 
 
 # ════════════════════════════════════════════════════════════
-# WEBHOOK — procesar eventos de Stripe
+# WEBHOOK — recibir notificaciones de MercadoPago
 # ════════════════════════════════════════════════════════════
 
-def verificar_webhook_signature(payload: bytes, signature_header: str) -> bool:
-    """Verifica que el webhook viene de Stripe (HMAC SHA256).
+def verificar_webhook_signature(payload: bytes, signature_header: str, request_id: str = "") -> bool:
+    """Verifica firma del webhook de MercadoPago.
 
-    Stripe firma cada webhook con el signing secret de Dashboard → Webhooks.
+    MercadoPago envía:
+    - Header `x-signature`: ts=1234567890,v1=hash
+    - Header `x-request-id`: id del evento
+
+    El hash es HMAC-SHA256 sobre: id=<event_id>;request-id=<req_id>;ts=<ts>;
+    usando MERCADOPAGO_WEBHOOK_SECRET como clave.
     """
     import hmac
     import hashlib
     import time
+    import json as _json
 
-    secret = stripe_webhook_secret()
+    secret = mp_webhook_secret()
     if not secret or not signature_header:
+        # Si no hay secret configurado, aceptamos (modo dev) pero logueamos
+        if not secret:
+            logger.warning("[billing webhook] MERCADOPAGO_WEBHOOK_SECRET no configurado, omitiendo verificación")
+            return True
         return False
 
     try:
-        # Header format: "t=1234567890,v1=abc123,v0=..."
-        partes = dict(p.split("=", 1) for p in signature_header.split(","))
-        timestamp = partes.get("t", "")
-        sig_v1 = partes.get("v1", "")
-        if not timestamp or not sig_v1:
+        partes = dict(p.strip().split("=", 1) for p in signature_header.split(","))
+        ts = partes.get("ts", "")
+        v1 = partes.get("v1", "")
+        if not ts or not v1:
             return False
 
-        # Verificar que no sea replay (max 5 min)
-        if abs(time.time() - int(timestamp)) > 300:
+        # Replay protection (max 5 min)
+        if abs(time.time() - int(ts)) > 300:
+            logger.warning("[billing webhook] timestamp fuera de ventana 5min")
             return False
 
-        # Computar HMAC
-        firmado = f"{timestamp}.{payload.decode('utf-8', errors='ignore')}"
+        # Extraer event_id del payload
+        try:
+            body = _json.loads(payload)
+        except Exception:
+            return False
+        event_id = str(body.get("data", {}).get("id", ""))
+
+        # Manifest a firmar
+        manifest = f"id:{event_id};request-id:{request_id};ts:{ts};"
         esperada = hmac.new(
             secret.encode("utf-8"),
-            firmado.encode("utf-8"),
+            manifest.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
 
-        return hmac.compare_digest(esperada, sig_v1)
+        return hmac.compare_digest(esperada, v1)
     except Exception as e:
-        logger.error(f"[billing] error verificando webhook: {e}")
+        logger.error(f"[billing webhook] error verificando firma: {e}")
         return False
 
 
-async def procesar_webhook(event: dict) -> dict:
-    """Procesa un evento de Stripe ya parseado y verificado.
+async def procesar_webhook(notification: dict) -> dict:
+    """Procesa una notificación de MercadoPago ya parseada.
 
-    Eventos clave:
-    - checkout.session.completed: alguien acaba de suscribirse exitosamente
-    - invoice.payment_succeeded: renovación mensual ok
-    - invoice.payment_failed: cobro falló
-    - customer.subscription.deleted: canceló
-    - customer.subscription.updated: cambio de plan, pausa, etc.
+    Tipos importantes:
+    - `subscription_preapproval`: estado del preapproval cambió (auth, paused, cancelled)
+    - `subscription_authorized_payment`: cobro mensual exitoso
+    - `payment`: pago individual (para pago único, no suscripción)
     """
     from agent.memory import async_session
     from agent.clinic_models import Clinica
     from sqlalchemy import select
 
-    tipo = event.get("type", "")
-    obj = event.get("data", {}).get("object", {})
-    logger.info(f"[billing webhook] {tipo}")
+    tipo = notification.get("type", "")
+    action = notification.get("action", "")
+    data_id = notification.get("data", {}).get("id", "")
 
-    async def _por_clinica_id(clinica_id: int):
+    logger.info(f"[billing webhook MP] type={tipo} action={action} id={data_id}")
+
+    # === Preapproval (suscripción) update ===
+    if tipo == "subscription_preapproval" and data_id:
+        # Consultar detalles del preapproval
+        exito, preapp, err = await _mp_request("GET", f"/preapproval/{data_id}")
+        if not exito:
+            return {"ok": False, "razon": f"No se pudo consultar preapproval: {err}"}
+
+        # external_reference tiene formato "clinica_{id}_{plan}"
+        ext_ref = preapp.get("external_reference", "")
+        partes = ext_ref.split("_")
+        if len(partes) != 3 or partes[0] != "clinica":
+            return {"ok": False, "razon": f"external_reference inválido: {ext_ref}"}
+
+        try:
+            clinica_id = int(partes[1])
+        except ValueError:
+            return {"ok": False, "razon": "clinica_id inválido"}
+        plan = partes[2]
+
+        status = preapp.get("status", "")  # authorized | paused | cancelled | pending
+
         async with async_session() as session:
-            return (await session.execute(
+            c = (await session.execute(
                 select(Clinica).where(Clinica.id == clinica_id)
             )).scalar_one_or_none()
+            if not c:
+                return {"ok": False, "razon": "Clínica no encontrada"}
 
-    async def _por_subscription_id(sub_id: str):
-        async with async_session() as session:
-            return (await session.execute(
-                select(Clinica).where(Clinica.stripe_subscription_id == sub_id)
-            )).scalar_one_or_none()
+            c.stripe_subscription_id = data_id  # preapproval id
 
-    async def _por_customer_id(cust_id: str):
-        async with async_session() as session:
-            return (await session.execute(
-                select(Clinica).where(Clinica.stripe_customer_id == cust_id)
-            )).scalar_one_or_none()
-
-    # === checkout.session.completed ===
-    if tipo == "checkout.session.completed":
-        clinica_id_str = obj.get("client_reference_id") or ""
-        if not clinica_id_str.isdigit():
-            return {"ok": False, "razon": "client_reference_id inválido"}
-        clinica = await _por_clinica_id(int(clinica_id_str))
-        if not clinica:
-            return {"ok": False, "razon": "Clínica no encontrada"}
-
-        sub_id = obj.get("subscription", "")
-        cust_id = obj.get("customer", "")
-        metadata = obj.get("metadata", {}) or {}
-        plan = (metadata.get("plan") or "pro").lower()
-
-        async with async_session() as session:
-            c = (await session.execute(
-                select(Clinica).where(Clinica.id == clinica.id)
-            )).scalar_one()
-            c.stripe_subscription_id = sub_id
-            c.stripe_customer_id = cust_id
-            c.plan = plan if plan in ("pro", "studio") else "pro"
-            c.monto_mensual_usd = PRECIOS_USD.get(c.plan, 100)
-            c.estado_pago = "activo"
-            c.congelada = False
-            c.razon_freeze = ""
-            c.ultimo_pago_en = datetime.utcnow()
-            c.actualizado_en = datetime.utcnow()
-            await session.commit()
-
-        logger.info(
-            f"[billing] checkout completed clinica={clinica.id} "
-            f"plan={plan} sub={sub_id[:20]}..."
-        )
-        return {"ok": True, "accion": "subscribed", "clinica_id": clinica.id}
-
-    # === invoice.payment_succeeded (renovación mensual) ===
-    if tipo == "invoice.payment_succeeded":
-        sub_id = obj.get("subscription", "")
-        clinica = await _por_subscription_id(sub_id) if sub_id else None
-        if not clinica:
-            return {"ok": False, "razon": f"Clínica no encontrada para sub {sub_id}"}
-
-        async with async_session() as session:
-            c = (await session.execute(
-                select(Clinica).where(Clinica.id == clinica.id)
-            )).scalar_one()
-            c.estado_pago = "activo"
-            c.congelada = False
-            c.razon_freeze = ""
-            c.ultimo_pago_en = datetime.utcnow()
-            # Próximo cobro: en ~30 días
-            from datetime import timedelta as _td
-            period_end = obj.get("lines", {}).get("data", [{}])[0].get("period", {}).get("end")
-            if period_end:
-                c.proximo_cobro_en = datetime.fromtimestamp(int(period_end))
-            else:
-                c.proximo_cobro_en = datetime.utcnow() + _td(days=30)
-            await session.commit()
-        return {"ok": True, "accion": "renewed", "clinica_id": clinica.id}
-
-    # === invoice.payment_failed ===
-    if tipo == "invoice.payment_failed":
-        sub_id = obj.get("subscription", "")
-        clinica = await _por_subscription_id(sub_id) if sub_id else None
-        if not clinica:
-            return {"ok": False, "razon": f"Clínica no encontrada para sub {sub_id}"}
-
-        async with async_session() as session:
-            c = (await session.execute(
-                select(Clinica).where(Clinica.id == clinica.id)
-            )).scalar_one()
-            c.estado_pago = "vencido"
-            # Damos gracia: NO congelar inmediatamente. Stripe reintenta 3 días.
-            # Si después de N intentos sigue fallando → subscription.deleted lo congela
-            await session.commit()
-        return {"ok": True, "accion": "payment_failed_grace", "clinica_id": clinica.id}
-
-    # === customer.subscription.deleted ===
-    if tipo == "customer.subscription.deleted":
-        sub_id = obj.get("id", "")
-        clinica = await _por_subscription_id(sub_id) if sub_id else None
-        if not clinica:
-            return {"ok": False, "razon": f"Clínica no encontrada para sub {sub_id}"}
-
-        async with async_session() as session:
-            c = (await session.execute(
-                select(Clinica).where(Clinica.id == clinica.id)
-            )).scalar_one()
-            c.estado_pago = "cancelado"
-            c.congelada = True
-            c.fecha_suspension = datetime.utcnow()
-            c.razon_freeze = "Suscripción cancelada o cobros fallidos repetidos"
-            c.motivo_suspension = "Suscripción cancelada"
-            await session.commit()
-        return {"ok": True, "accion": "frozen", "clinica_id": clinica.id}
-
-    # === customer.subscription.updated ===
-    if tipo == "customer.subscription.updated":
-        sub_id = obj.get("id", "")
-        clinica = await _por_subscription_id(sub_id) if sub_id else None
-        if not clinica:
-            return {"ok": False, "razon": "Clínica no encontrada"}
-
-        status = obj.get("status", "")  # active | past_due | canceled | trialing | unpaid
-
-        async with async_session() as session:
-            c = (await session.execute(
-                select(Clinica).where(Clinica.id == clinica.id)
-            )).scalar_one()
-            if status == "active":
+            if status == "authorized":
+                # Suscripción autorizada → activar plan
+                c.plan = plan if plan in ("pro", "studio") else "pro"
+                c.monto_mensual_usd = PRECIOS_USD.get(c.plan, 100)
                 c.estado_pago = "activo"
                 c.congelada = False
-            elif status in ("past_due", "unpaid"):
+                c.razon_freeze = ""
+                c.ultimo_pago_en = datetime.utcnow()
+                # MercadoPago retorna next_payment_date
+                next_date = preapp.get("next_payment_date")
+                if next_date:
+                    try:
+                        # Format: 2026-06-29T10:00:00.000-05:00
+                        c.proximo_cobro_en = datetime.fromisoformat(
+                            next_date.replace("Z", "+00:00")
+                        ).replace(tzinfo=None)
+                    except Exception:
+                        pass
+            elif status == "paused":
                 c.estado_pago = "vencido"
-            elif status == "canceled":
+            elif status == "cancelled":
                 c.estado_pago = "cancelado"
                 c.congelada = True
-                c.razon_freeze = "Suscripción cancelada"
+                c.razon_freeze = "Suscripción cancelada en MercadoPago"
+                c.fecha_suspension = datetime.utcnow()
+                c.motivo_suspension = "Suscripción cancelada"
+
             await session.commit()
-        return {"ok": True, "accion": f"status_{status}", "clinica_id": clinica.id}
+
+        return {"ok": True, "accion": f"preapproval_{status}", "clinica_id": clinica_id}
+
+    # === Authorized payment (cobro mensual exitoso) ===
+    if tipo == "subscription_authorized_payment" and data_id:
+        # Consultar detalles
+        exito, payment, err = await _mp_request(
+            "GET", f"/authorized_payments/{data_id}"
+        )
+        if not exito:
+            return {"ok": False, "razon": err}
+
+        preapproval_id = payment.get("preapproval_id", "")
+        status = payment.get("status", "")  # processed | scheduled | rejected
+
+        if not preapproval_id:
+            return {"ok": False, "razon": "Sin preapproval_id en payment"}
+
+        async with async_session() as session:
+            c = (await session.execute(
+                select(Clinica).where(Clinica.stripe_subscription_id == preapproval_id)
+            )).scalar_one_or_none()
+            if not c:
+                return {"ok": False, "razon": "Clínica no encontrada por preapproval"}
+
+            if status == "processed":
+                c.estado_pago = "activo"
+                c.congelada = False
+                c.razon_freeze = ""
+                c.ultimo_pago_en = datetime.utcnow()
+                # Sumar 30 días para próximo
+                from datetime import timedelta as _td
+                c.proximo_cobro_en = datetime.utcnow() + _td(days=30)
+            elif status == "rejected":
+                c.estado_pago = "vencido"
+                # Gracia: MercadoPago reintenta. NO congelamos aún.
+
+            await session.commit()
+
+        return {"ok": True, "accion": f"payment_{status}", "clinica_id": c.id}
 
     return {"ok": True, "accion": "ignorado", "tipo": tipo}
 
 
 # ════════════════════════════════════════════════════════════
-# WORKER — auto-freeze de trials expirados y cuentas vencidas
+# WORKER — auto-freeze de trials expirados
 # ════════════════════════════════════════════════════════════
 
 async def auto_freeze_trials_expirados() -> int:
-    """Congela clínicas cuyo trial expiró sin que se hayan suscrito.
-
-    Llamado periódicamente desde voice_workers (o un cron dedicado).
-    Returns: cantidad de clínicas congeladas.
-    """
+    """Congela clínicas cuyo trial expiró sin suscribirse."""
     from agent.memory import async_session
     from agent.clinic_models import Clinica
     from sqlalchemy import select
@@ -435,17 +460,16 @@ async def auto_freeze_trials_expirados() -> int:
 
 
 # ════════════════════════════════════════════════════════════
-# MÉTRICAS — MRR real para super admin
+# MÉTRICAS — MRR real
 # ════════════════════════════════════════════════════════════
 
 async def mrr_real() -> dict:
-    """Calcula MRR real basado en suscripciones activas."""
+    """MRR real basado en suscripciones activas."""
     from agent.memory import async_session
     from agent.clinic_models import Clinica
     from sqlalchemy import select, func
 
     async with async_session() as session:
-        # MRR real: solo clinicas con estado_pago=activo
         activas = list((await session.execute(
             select(Clinica)
             .where(Clinica.estado_pago == "activo")
@@ -453,9 +477,8 @@ async def mrr_real() -> dict:
         )).scalars().all())
 
         mrr_usd = sum(c.monto_mensual_usd or 0 for c in activas)
-        mrr_cop_estimado = mrr_usd * 4000  # estimado COP
+        mrr_cop_estimado = mrr_usd * USD_A_COP
 
-        # Pipeline: trials activos (potencial MRR si convierten)
         trials = list((await session.execute(
             select(Clinica)
             .where(Clinica.estado_pago == "trial")
@@ -463,14 +486,12 @@ async def mrr_real() -> dict:
         )).scalars().all())
         pipeline_usd = sum(PRECIOS_USD.get(c.plan, 100) for c in trials)
 
-        # Vencidos (cobro falló, en gracia)
         vencidos = (await session.execute(
             select(func.count(Clinica.id))
             .where(Clinica.estado_pago == "vencido")
             .where(Clinica.congelada == False)  # noqa: E712
         )).scalar() or 0
 
-        # Churn 30 días: cancelados en último mes
         from datetime import timedelta as _td
         hace_30 = datetime.utcnow() - _td(days=30)
         churn_30d = (await session.execute(
