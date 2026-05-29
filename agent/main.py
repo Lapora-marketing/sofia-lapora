@@ -21,6 +21,7 @@ from agent.dashboard import router as dashboard_router
 from agent.clinic import router as clinic_router
 from agent.lapora_bot import router as lapora_bot_router
 from agent.voice_bot import router as voice_bot_router
+from agent.clinic_api import router as clinic_api_router
 from agent.reminders import scheduler_loop
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -144,6 +145,8 @@ app.include_router(clinic_router)
 app.include_router(lapora_bot_router)
 # Lapora Voice Bot (calling) en /voice/
 app.include_router(voice_bot_router)
+# REST API custom (Studio only) en /api/v1/
+app.include_router(clinic_api_router)
 
 
 @app.get("/")

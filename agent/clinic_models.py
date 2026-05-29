@@ -69,6 +69,12 @@ class Clinica(Base):
     # Voice Bot per-tenant — confirmación automática de citas por llamada
     voz_confirmar_citas_activa: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
+    # Studio white-label (Sprint Studio #1)
+    wl_nombre_marca: Mapped[str] = mapped_column(String(120), default="", nullable=True)
+    wl_email_remitente: Mapped[str] = mapped_column(String(200), default="", nullable=True)
+    wl_footer_custom: Mapped[str] = mapped_column(String(500), default="", nullable=True)
+    wl_esconder_powered_by: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Suspensión / billing
     congelada: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     motivo_suspension: Mapped[str] = mapped_column(String(300), default="", nullable=True)
@@ -105,6 +111,31 @@ class UsuarioClinic(Base):
 # ════════════════════════════════════════════════════════════
 # INVITACION DE USUARIO — Link que el owner comparte con su equipo
 # ════════════════════════════════════════════════════════════
+
+class ApiKey(Base):
+    """API Key per-tenant para acceder al REST API custom (Studio only).
+
+    El owner genera N keys en /clinic/app/api. Cada key tiene:
+    - prefix legible (lpk_abc123...) para identificar sin ver completa
+    - key_hash (SHA-256) — nunca guardamos la key en plano
+    - scopes (read | write | admin)
+    - last_used_at para auditar uso
+    """
+    __tablename__ = "clinic_api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinica_id: Mapped[int] = mapped_column(ForeignKey("clinic_clinicas.id"), index=True)
+
+    nombre:   Mapped[str] = mapped_column(String(120), default="")    # "Integración HCE", etc.
+    prefix:   Mapped[str] = mapped_column(String(12), index=True)     # lpk_ABC123
+    key_hash: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    scopes:   Mapped[str] = mapped_column(String(60), default="read") # "read" | "read,write" | "admin"
+
+    activa:        Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_used_at:  Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    creada_en:     Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 
 class InvitacionUsuario(Base):
     """Invitación pendiente para agregar usuario a una clínica.
@@ -402,6 +433,116 @@ LIMITE_USUARIOS_POR_PLAN = {
 }
 
 
+# ════════════════════════════════════════════════════════════
+# WHITE-LABEL HELPERS — Cómo se le muestra la marca al usuario final
+# ════════════════════════════════════════════════════════════
+
+def es_studio(clinica: "Clinica") -> bool:
+    """True si la clínica tiene plan Studio (puede usar features premium)."""
+    return (clinica.plan or "").lower() == "studio"
+
+
+def marca_visible(clinica: "Clinica") -> str:
+    """Nombre de marca a mostrar al usuario final.
+
+    - Studio con wl_nombre_marca custom → su marca
+    - Studio sin custom → su nombre de clínica
+    - Pro/Free → "{nombre_clinica} · Lapora Clinic"
+    """
+    if es_studio(clinica) and (clinica.wl_nombre_marca or "").strip():
+        return clinica.wl_nombre_marca.strip()
+    if es_studio(clinica):
+        return clinica.nombre or "Mi Clínica"
+    # Pro/Free siempre muestran Lapora
+    return f"{clinica.nombre or 'Mi Clínica'} · Lapora Clinic"
+
+
+def footer_visible(clinica: "Clinica") -> str:
+    """HTML del footer (Powered by Lapora vs custom)."""
+    if es_studio(clinica) and clinica.wl_esconder_powered_by:
+        return (clinica.wl_footer_custom or "").strip()
+    return "Powered by Lapora Clinic"
+
+
+def email_remitente_visible(clinica: "Clinica") -> str:
+    """De qué email se envían las notificaciones."""
+    if es_studio(clinica) and (clinica.wl_email_remitente or "").strip():
+        return clinica.wl_email_remitente.strip()
+    return "laporamarketingdigital@gmail.com"
+
+
+# ════════════════════════════════════════════════════════════
+# API KEYS HELPERS — Studio REST API
+# ════════════════════════════════════════════════════════════
+
+def _hash_api_key(key_plana: str) -> str:
+    return hashlib.sha256(key_plana.encode("utf-8")).hexdigest()
+
+
+async def generar_api_key(
+    clinica_id: int,
+    nombre: str = "",
+    scopes: str = "read",
+) -> tuple[ApiKey, str]:
+    """Genera nueva API key. Retorna (registro_db, key_plana_solo_visible_aca).
+
+    La key plana SOLO se devuelve aquí; después solo se ve el prefix.
+    Formato: lpk_<32 chars random>
+    """
+    key_plana = "lpk_" + secrets.token_urlsafe(32)
+    prefix = key_plana[:12]  # lpk_<8 chars>
+    h = _hash_api_key(key_plana)
+
+    async with async_session() as session:
+        ak = ApiKey(
+            clinica_id=clinica_id,
+            nombre=(nombre or "API Key")[:120],
+            prefix=prefix,
+            key_hash=h,
+            scopes=scopes if scopes in ("read", "read,write", "admin") else "read",
+            activa=True,
+        )
+        session.add(ak)
+        await session.commit()
+        await session.refresh(ak)
+    return ak, key_plana
+
+
+async def autenticar_api_key(key_plana: str) -> Optional[ApiKey]:
+    """Verifica una API key. Retorna el registro si es válida + activa.
+
+    También actualiza last_used_at y requests_count.
+    """
+    if not key_plana or not key_plana.startswith("lpk_"):
+        return None
+    h = _hash_api_key(key_plana)
+    async with async_session() as session:
+        ak = (await session.execute(
+            select(ApiKey).where(ApiKey.key_hash == h).where(ApiKey.activa == True)  # noqa: E712
+        )).scalar_one_or_none()
+        if ak:
+            ak.last_used_at = datetime.utcnow()
+            ak.requests_count = (ak.requests_count or 0) + 1
+            await session.commit()
+            await session.refresh(ak)
+    return ak
+
+
+async def revocar_api_key(api_key_id: int, clinica_id: int) -> bool:
+    """Marca una key como inactiva (soft delete para auditoría)."""
+    async with async_session() as session:
+        ak = (await session.execute(
+            select(ApiKey)
+            .where(ApiKey.id == api_key_id)
+            .where(ApiKey.clinica_id == clinica_id)
+        )).scalar_one_or_none()
+        if ak:
+            ak.activa = False
+            await session.commit()
+            return True
+    return False
+
+
 def limite_usuarios(plan: str) -> int:
     """Retorna cuántos usuarios totales puede tener una clínica según su plan."""
     return LIMITE_USUARIOS_POR_PLAN.get((plan or "free").lower(), 1)
@@ -586,6 +727,11 @@ async def aplicar_migraciones():
             "ALTER TABLE voice_config ADD COLUMN IF NOT EXISTS mock_mode BOOLEAN DEFAULT FALSE",
             # Voice Bot — index compuesto para acelerar dispatch (Optimización)
             "CREATE INDEX IF NOT EXISTS ix_voicequeue_dispatch ON voice_queue (estado, programada_para, prioridad)",
+            # Studio plan white-label (Sprint Studio #1)
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_nombre_marca VARCHAR(120) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_email_remitente VARCHAR(200) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_footer_custom VARCHAR(500) DEFAULT ''",
+            "ALTER TABLE clinic_clinicas ADD COLUMN IF NOT EXISTS wl_esconder_powered_by BOOLEAN DEFAULT FALSE",
         ]
     else:
         # SQLite NO soporta IF NOT EXISTS para columnas, hay que verificar manualmente
@@ -636,6 +782,15 @@ async def aplicar_migraciones():
                 # Voice Bot Día 5: campo en clinic_clinicas
                 if "voz_confirmar_citas_activa" not in columnas_existentes:
                     migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN voz_confirmar_citas_activa BOOLEAN DEFAULT 0")
+                # Studio white-label
+                if "wl_nombre_marca" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN wl_nombre_marca VARCHAR(120) DEFAULT ''")
+                if "wl_email_remitente" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN wl_email_remitente VARCHAR(200) DEFAULT ''")
+                if "wl_footer_custom" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN wl_footer_custom VARCHAR(500) DEFAULT ''")
+                if "wl_esconder_powered_by" not in columnas_existentes:
+                    migraciones.append("ALTER TABLE clinic_clinicas ADD COLUMN wl_esconder_powered_by BOOLEAN DEFAULT 0")
                 # Voice Bot mock_mode en voice_config
                 try:
                     result_vc = await conn.execute(text("PRAGMA table_info(voice_config)"))

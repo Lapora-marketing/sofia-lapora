@@ -34,11 +34,12 @@ from sqlalchemy import select, func, or_, desc
 from agent.memory import async_session
 from agent.clinic_models import (
     Clinica, UsuarioClinic, Paciente, MensajeUnificado,
-    Llamada, CitaClinic, PlantillaRespuesta, InvitacionUsuario,
+    Llamada, CitaClinic, PlantillaRespuesta, InvitacionUsuario, ApiKey,
     crear_clinica, autenticar_usuario, obtener_clinica,
     cargar_demo_data, hash_password,
     limite_usuarios, contar_usuarios_clinica,
     puede_invitar_usuario, crear_invitacion, consumir_invitacion,
+    generar_api_key, revocar_api_key,
 )
 from io import StringIO
 import csv as _csv_mod
@@ -993,6 +994,9 @@ def sidebar_clinic(activa: str, sesion: dict, clinica: Clinica) -> str:
         ("citas",     "Citas",      "/clinic/app/citas",       "M3 4h18v2H3z M3 10h18v10H3z"),
         ("llamadas",  "Llamadas",   "/clinic/app/llamadas",    "M22 16.92v3a2 2 0 0 1-2.18 2A19.79 19.79 0 0 1 2 5.18 2 2 0 0 1 4 3h3"),
         ("plantillas","Plantillas", "/clinic/app/plantillas",  "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"),
+        ("analytics", "⭐ Analytics avanzado", "/clinic/app/analytics", "M3 3v18h18 M9 17V9 M15 17V5 M21 17v-3"),
+        ("pacientes-riesgo", "⭐ Pacientes en riesgo", "/clinic/app/pacientes-riesgo", "M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"),
+        ("api", "⭐ API REST", "/clinic/app/api", "M16 18l6-6-6-6 M8 6l-6 6 6 6"),
         ("usuarios",  "Equipo",     "/clinic/app/usuarios",    "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87"),
         ("config",    "Configuración","/clinic/app/configuracion","M12 1v6 M12 17v6 M4.22 4.22l4.24 4.24"),
     ]
@@ -2961,6 +2965,12 @@ async def vista_config(
           {('<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;padding:10px 14px;border-radius:8px;margin-top:10px;font-size:13px;"><strong>⚠ Requiere plan Pro o Studio</strong> para activar llamadas automáticas. <a href="#">Subir plan</a></div>' if clinica.plan == 'free' else '')}
         </div>
 
+        <!-- BACKUP DESCARGABLE (Studio) -->
+        {('<div class="card" style="border:1px solid #10B981;background:linear-gradient(135deg,#F0FDF4,white);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h2 style="font-size:16px;font-weight:700;">💾 Backup descargable</h2><span class="badge" style="background:#10B981;color:white;">STUDIO</span></div><p style="font-size:13px;color:var(--text-soft);margin-bottom:14px;line-height:1.5;">Descargá un ZIP con todos tus datos (pacientes, citas, mensajes, llamadas, plantillas). Cumplimiento + portabilidad.</p><a href="/clinic/app/backup" class="btn btn-primary" style="background:#10B981;">⬇ Descargar backup ahora</a></div>' if clinica.plan == 'studio' else '')}
+
+        <!-- WHITE-LABEL TOTAL (solo Studio) -->
+        {('<div class="card" style="border:2px solid #8B5CF6;background:linear-gradient(135deg,#FAFAFF,white);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"><h2 style="font-size:16px;font-weight:700;">⭐ White-label total (Studio)</h2><span class="badge badge-pro" style="background:#8B5CF6;">STUDIO ONLY</span></div><p style="font-size:13px;color:var(--text-soft);margin-bottom:16px;line-height:1.6;">Tu clínica luce con tu propia marca — sin mención a Lapora en ningún lugar visible para tus pacientes.</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;"><div><label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Nombre de marca custom</label><input type="text" name="wl_nombre_marca" value="' + esc(clinica.wl_nombre_marca or '') + '" placeholder="' + esc(clinica.nombre or 'Mi Clínica') + '" class="input"><p style="font-size:11px;color:var(--text-soft);margin-top:4px;">Cómo aparecés en mensajes de SofIA, recordatorios, footer.</p></div><div><label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Email remitente custom</label><input type="email" name="wl_email_remitente" value="' + esc(clinica.wl_email_remitente or '') + '" placeholder="atencion@suclinica.com" class="input"><p style="font-size:11px;color:var(--text-soft);margin-top:4px;">Email desde el que se envían notificaciones.</p></div></div><div style="margin-top:14px;"><label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px;">Footer custom</label><input type="text" name="wl_footer_custom" value="' + esc(clinica.wl_footer_custom or '') + '" placeholder="Su clínica de confianza desde 1998" class="input"></div><label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-top:14px;padding:10px 14px;background:#F3F4F6;border-radius:8px;"><input type="checkbox" name="wl_esconder_powered_by" value="1" ' + ('checked' if clinica.wl_esconder_powered_by else '') + ' style="width:18px;height:18px;cursor:pointer;accent-color:#8B5CF6;"><span style="font-size:13px;font-weight:600;">Ocultar &quot;Powered by Lapora Clinic&quot; del footer</span></label></div>' if clinica.plan == 'studio' else ('<div class="card" style="border:1px dashed #D1D5DB;background:#FAFAFA;text-align:center;padding:20px;"><span style="font-size:13px;color:var(--text-soft);">⭐ <strong>White-label total</strong> está disponible en plan <strong>Studio</strong>. <a href="#" style="color:#8B5CF6;font-weight:700;">Upgrade a Studio</a></span></div>'))}
+
         <!-- BRANDING (solo Pro y Studio) -->
         <div class="card">
           <h2 style="font-size:16px;font-weight:700;margin-bottom:6px;">🎨 Branding</h2>
@@ -3022,6 +3032,11 @@ async def guardar_config(
     ia_instrucciones_extra: str = Form(""),
     # Voice Bot per-tenant
     voz_confirmar_citas_activa: Optional[str] = Form(None),
+    # Studio white-label
+    wl_nombre_marca: str = Form(""),
+    wl_email_remitente: str = Form(""),
+    wl_footer_custom: str = Form(""),
+    wl_esconder_powered_by: Optional[str] = Form(None),
     clinic_session: Optional[str] = Cookie(None),
 ):
     sesion = obtener_sesion(clinic_session)
@@ -3061,6 +3076,13 @@ async def guardar_config(
                 c.voz_confirmar_citas_activa = (voz_confirmar_citas_activa == "1")
             else:
                 c.voz_confirmar_citas_activa = False
+
+            # Studio white-label: solo plan studio
+            if c.plan == "studio":
+                c.wl_nombre_marca = wl_nombre_marca.strip()[:120]
+                c.wl_email_remitente = wl_email_remitente.strip()[:200]
+                c.wl_footer_custom = wl_footer_custom.strip()[:500]
+                c.wl_esconder_powered_by = (wl_esconder_powered_by == "1")
 
             c.actualizado_en = datetime.utcnow()
             await session.commit()
@@ -3437,6 +3459,713 @@ async def aceptar_invitacion(
     resp = RedirectResponse("/clinic/app/?bienvenida=1", status_code=303)
     resp.set_cookie("clinic_session", cookie_token, max_age=30 * 24 * 3600, httponly=True, samesite="lax")
     return resp
+
+
+# ════════════════════════════════════════════════════════════
+# 10.55) API KEYS — Studio feature gestión REST API
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/api", response_class=HTMLResponse)
+async def vista_api(
+    nueva_key: Optional[str] = None,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Gestiona API keys del REST API custom (solo Studio)."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    es_studio = (clinica.plan or "").lower() == "studio"
+    if not es_studio:
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>API custom - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body><div class="app-wrap">{sidebar_clinic("api", sesion, clinica)}
+<main class="main">
+    <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">🔌 API REST custom</h1>
+    <p style="color:var(--text-soft);margin-bottom:28px;">Integra tu HCE o sistemas legacy</p>
+    <div style="max-width:700px;background:linear-gradient(135deg,#FAFAFF,white);border:2px solid #8B5CF6;border-radius:18px;padding:36px;text-align:center;">
+        <div style="font-size:54px;margin-bottom:14px;">⭐</div>
+        <h2 style="font-size:22px;font-weight:800;margin-bottom:8px;">REST API es feature Studio</h2>
+        <p style="color:var(--text-soft);font-size:15px;line-height:1.6;margin-bottom:24px;">
+            Conectá Lapora Clinic con tu Historia Clínica Electrónica, sistema contable o
+            cualquier integración custom. Endpoints REST con autenticación por API key.
+        </p>
+        <a href="https://wa.me/573228783019?text=Quiero+API+REST+de+Lapora" style="display:inline-block;background:#8B5CF6;color:white;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;">⭐ Subir a Studio — $250 USD/mes</a>
+    </div>
+</main></div></body></html>""")
+
+    def esc(s): return html.escape(str(s or ""), quote=True)
+
+    # Listar keys existentes
+    async with async_session() as session:
+        keys = list((await session.execute(
+            select(ApiKey)
+            .where(ApiKey.clinica_id == clinica.id)
+            .order_by(desc(ApiKey.creada_en))
+        )).scalars().all())
+
+    # Banner mostrando la key recién creada UNA SOLA VEZ
+    banner_nueva = ""
+    if nueva_key:
+        banner_nueva = f'''
+        <div style="background:#FEF3C7;border:2px solid #F59E0B;border-radius:12px;padding:18px;margin-bottom:24px;">
+            <h3 style="font-size:14px;font-weight:700;color:#92400E;margin-bottom:10px;">⚠ Guarda esta API key ahora — NO se mostrará de nuevo</h3>
+            <div style="display:flex;gap:10px;align-items:center;background:white;border:1px solid #F59E0B;border-radius:8px;padding:10px 14px;">
+                <code id="api-key-val" style="flex:1;font-size:13px;font-family:monospace;color:#92400E;word-break:break-all;">{esc(nueva_key)}</code>
+                <button onclick="navigator.clipboard.writeText(document.getElementById('api-key-val').textContent); this.textContent='Copiado';" style="background:#F59E0B;color:white;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Copiar</button>
+            </div>
+            <p style="font-size:11px;color:#92400E;margin-top:8px;">Esta es la única vez que verás la key completa. Guardala en un gestor de contraseñas o variables de entorno seguras.</p>
+        </div>'''
+
+    # Tabla de keys
+    filas = ""
+    if not keys:
+        filas = '<tr><td colspan="5" style="padding:24px;text-align:center;color:#9CA3AF;">No tenés API keys aún. Generá la primera abajo.</td></tr>'
+    for k in keys:
+        last = k.last_used_at.strftime("%d/%m/%Y %H:%M") if k.last_used_at else "Nunca"
+        creada = k.creada_en.strftime("%d/%m/%Y")
+        estado = '<span style="background:#D1FAE5;color:#065F46;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700;">ACTIVA</span>' if k.activa else '<span style="background:#FEE2E2;color:#991B1B;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700;">REVOCADA</span>'
+        accion = '' if not k.activa else f'<form method="post" action="/clinic/app/api/{k.id}/revocar" style="display:inline;" onsubmit="return confirm(\'¿Revocar esta key? Quien la tenga ya no podrá usar la API.\');"><button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:#EF4444;border-color:#FCA5A5;">Revocar</button></form>'
+        filas += f'''
+        <tr>
+            <td><strong>{esc(k.nombre)}</strong></td>
+            <td><code style="font-family:monospace;font-size:11px;color:#6B7280;">{esc(k.prefix)}...</code></td>
+            <td><span style="background:#EDE9FE;color:#5B21B6;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;">{esc(k.scopes)}</span></td>
+            <td style="font-size:12px;color:#6B7280;">{k.requests_count or 0} reqs · último uso {last}</td>
+            <td>{estado}</td>
+            <td style="text-align:right;">{accion}</td>
+        </tr>'''
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>API Keys - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("api", sesion, clinica)}
+    <main class="main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">🔌 API REST custom</h1>
+      <p style="color:var(--text-soft);margin-bottom:24px;">Integra Lapora con tus sistemas via REST · <span style="color:#8B5CF6;font-weight:700;">STUDIO</span></p>
+
+      {banner_nueva}
+
+      <!-- Crear nueva key -->
+      <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:24px;">
+        <h2 style="font-size:15px;font-weight:700;margin-bottom:12px;">✚ Generar nueva API key</h2>
+        <form method="post" action="/clinic/app/api/crear" style="display:grid;grid-template-columns:2fr 1fr auto;gap:10px;align-items:end;">
+          <div>
+            <label style="font-size:11px;font-weight:700;color:var(--text-soft);">Nombre / propósito</label>
+            <input type="text" name="nombre" required placeholder="Integración con HCE Salud Total" class="input">
+          </div>
+          <div>
+            <label style="font-size:11px;font-weight:700;color:var(--text-soft);">Permisos</label>
+            <select name="scopes" class="input">
+              <option value="read">Solo lectura (GET)</option>
+              <option value="read,write">Lectura + escritura</option>
+              <option value="admin">Admin (todo)</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">Generar key</button>
+        </form>
+      </div>
+
+      <!-- Lista de keys -->
+      <div style="background:white;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:24px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <thead style="background:#F9FAFB;">
+            <tr>
+              <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Nombre</th>
+              <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Prefix</th>
+              <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Scopes</th>
+              <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Uso</th>
+              <th style="text-align:left;padding:12px 16px;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;">Estado</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>{filas}</tbody>
+        </table>
+      </div>
+
+      <!-- Docs rápidos -->
+      <div style="background:#1F2937;color:#F9FAFB;border-radius:12px;padding:24px;font-family:monospace;font-size:13px;line-height:1.7;">
+        <h2 style="font-size:14px;font-weight:700;margin-bottom:14px;color:#A78BFA;font-family:-apple-system,sans-serif;">📚 Ejemplos de uso</h2>
+
+        <p style="color:#A1A1AA;margin-bottom:6px;"># 1. Verificar tu key:</p>
+        <code style="display:block;background:#111827;padding:10px;border-radius:6px;margin-bottom:14px;color:#A7F3D0;">curl -H "X-API-Key: lpk_..." https://sofia-lapora-production.up.railway.app/api/v1/info</code>
+
+        <p style="color:#A1A1AA;margin-bottom:6px;"># 2. Listar pacientes:</p>
+        <code style="display:block;background:#111827;padding:10px;border-radius:6px;margin-bottom:14px;color:#A7F3D0;">curl -H "X-API-Key: lpk_..." "https://sofia-lapora-production.up.railway.app/api/v1/pacientes?page=1&per_page=50"</code>
+
+        <p style="color:#A1A1AA;margin-bottom:6px;"># 3. Crear paciente (requiere scope write):</p>
+        <code style="display:block;background:#111827;padding:10px;border-radius:6px;color:#A7F3D0;white-space:pre-wrap;">curl -X POST -H "X-API-Key: lpk_..." -H "Content-Type: application/json" \\
+  -d '{{"nombre":"Juan Pérez","telefono":"+573201234567","email":"juan@email.com"}}' \\
+  https://sofia-lapora-production.up.railway.app/api/v1/pacientes</code>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+@router.post("/app/api/crear", response_class=HTMLResponse)
+async def crear_api_key(
+    nombre: str = Form(""),
+    scopes: str = Form("read"),
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica or (clinica.plan or "").lower() != "studio":
+        return RedirectResponse("/clinic/app/api", status_code=303)
+
+    _, key_plana = await generar_api_key(
+        clinica_id=clinica.id, nombre=nombre, scopes=scopes,
+    )
+    # La key se pasa por query param SOLO esta vez
+    from urllib.parse import quote as _q
+    return RedirectResponse(f"/clinic/app/api?nueva_key={_q(key_plana)}", status_code=303)
+
+
+@router.post("/app/api/{api_key_id}/revocar", response_class=HTMLResponse)
+async def revocar_api_key_route(
+    api_key_id: int,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    await revocar_api_key(api_key_id, sesion["clinica_id"])
+    return RedirectResponse("/clinic/app/api", status_code=303)
+
+
+# ════════════════════════════════════════════════════════════
+# 10.6) ANALYTICS AVANZADO — Studio feature
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/analytics", response_class=HTMLResponse)
+async def vista_analytics(
+    periodo: int = 30,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Analytics avanzado con métricas + gráfico tendencia. Solo Studio."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    es_studio = (clinica.plan or "").lower() == "studio"
+
+    if not es_studio:
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Analytics - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body><div class="app-wrap">{sidebar_clinic("analytics", sesion, clinica)}
+<main class="main">
+    <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">📊 Analytics avanzado</h1>
+    <p style="color:var(--text-soft);margin-bottom:28px;">Métricas profundas + ROI por canal</p>
+    <div style="max-width:700px;background:linear-gradient(135deg,#FAFAFF,white);border:2px solid #8B5CF6;border-radius:18px;padding:36px;text-align:center;">
+        <div style="font-size:54px;margin-bottom:14px;">⭐</div>
+        <h2 style="font-size:22px;font-weight:800;margin-bottom:8px;">Feature exclusiva Studio</h2>
+        <p style="color:var(--text-soft);font-size:15px;line-height:1.6;margin-bottom:24px;">
+            Conocé exactamente qué canal te trae más pacientes, cuánto demoró IA en responder,
+            cuál tratamiento genera más ingresos, tendencia diaria de mensajes y mucho más.
+        </p>
+        <a href="https://wa.me/573228783019?text=Quiero+subir+a+Studio+por+Analytics" style="display:inline-block;background:#8B5CF6;color:white;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;">⭐ Subir a Studio — $250 USD/mes</a>
+    </div>
+</main></div></body></html>""")
+
+    # === Studio plan ===
+    from agent.clinic_analytics import analytics_completo
+    periodo = max(7, min(90, int(periodo)))
+    data = await analytics_completo(clinica.id, dias_atras=periodo)
+
+    def esc(s): return html.escape(str(s or ""), quote=True)
+
+    # Sparkline SVG inline para tendencia
+    serie = data["tendencia_diaria"]
+    if serie:
+        valores = [s["mensajes"] for s in serie]
+        max_val = max(valores) or 1
+        n = len(serie)
+        w = 600
+        h = 100
+        puntos = []
+        for i, v in enumerate(valores):
+            x = (i / max(1, n - 1)) * w
+            y = h - (v / max_val) * (h - 10) - 5
+            puntos.append(f"{x:.1f},{y:.1f}")
+        path = "M " + " L ".join(puntos)
+        path_fill = path + f" L {w},{h} L 0,{h} Z"
+        labels_x = [f'<text x="{(i / max(1, n - 1)) * w:.1f}" y="{h + 15}" font-size="10" fill="#9CA3AF" text-anchor="middle">{s["fecha"]}</text>' for i, s in enumerate(serie) if i % max(1, n // 7) == 0]
+        sparkline = f'''
+        <svg viewBox="0 0 {w} {h + 25}" style="width:100%;height:160px;">
+            <defs>
+                <linearGradient id="g1" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.3"/>
+                    <stop offset="100%" stop-color="#8B5CF6" stop-opacity="0"/>
+                </linearGradient>
+            </defs>
+            <path d="{path_fill}" fill="url(#g1)"/>
+            <path d="{path}" fill="none" stroke="#8B5CF6" stroke-width="2.5"/>
+            {''.join(labels_x)}
+        </svg>'''
+    else:
+        sparkline = '<div style="text-align:center;padding:40px;color:#9CA3AF;">Sin datos en el periodo</div>'
+
+    # Top tratamientos como barras
+    top_t = data["top_tratamientos"]
+    max_pacientes = max((t["pacientes"] for t in top_t), default=1)
+    barras_html = ""
+    for t in top_t:
+        pct = (t["pacientes"] / max_pacientes) * 100
+        barras_html += f'''
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div style="width:140px;font-size:13px;color:#374151;flex-shrink:0;">{esc(t["tratamiento"][:25])}</div>
+            <div style="flex:1;background:#F3F4F6;border-radius:4px;height:24px;position:relative;overflow:hidden;">
+                <div style="background:linear-gradient(90deg,#8B5CF6,#A78BFA);width:{pct}%;height:100%;border-radius:4px;"></div>
+            </div>
+            <div style="font-weight:700;color:#8B5CF6;width:40px;text-align:right;">{t["pacientes"]}</div>
+        </div>'''
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Analytics - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("analytics", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:20px;flex-wrap:wrap;gap:14px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">📊 Analytics avanzado</h1>
+          <p style="color:var(--text-soft);">Últimos {periodo} días · <span style="color:#8B5CF6;font-weight:700;">STUDIO</span></p>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <a href="?periodo=7" style="padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;{'background:#8B5CF6;color:white' if periodo == 7 else 'background:white;color:#8B5CF6;border:1px solid #8B5CF6'};">7 días</a>
+          <a href="?periodo=30" style="padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;{'background:#8B5CF6;color:white' if periodo == 30 else 'background:white;color:#8B5CF6;border:1px solid #8B5CF6'};">30 días</a>
+          <a href="?periodo=90" style="padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;{'background:#8B5CF6;color:white' if periodo == 90 else 'background:white;color:#8B5CF6;border:1px solid #8B5CF6'};">90 días</a>
+        </div>
+      </div>
+
+      <!-- Stats top -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:24px;">
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">📥 Mensajes recibidos</div>
+          <div style="font-size:30px;font-weight:800;color:#111827;margin-top:4px;">{data['volumen_canal']['total']}</div>
+        </div>
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">🤖 % automatizado</div>
+          <div style="font-size:30px;font-weight:800;color:#10B981;margin-top:4px;">{data['respuesta_ia']['pct_automatizado']}%</div>
+          <div style="font-size:11px;color:var(--text-soft);">{data['respuesta_ia']['por_ia']} por IA, {data['respuesta_ia']['por_humano']} por equipo</div>
+        </div>
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">⚡ Tiempo respuesta promedio</div>
+          <div style="font-size:30px;font-weight:800;color:#3B82F6;margin-top:4px;">{data['tiempo_respuesta']['promedio_legible']}</div>
+          <div style="font-size:11px;color:var(--text-soft);">Muestra: {data['tiempo_respuesta']['muestra']} conversaciones</div>
+        </div>
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">✓ Tasa de show</div>
+          <div style="font-size:30px;font-weight:800;color:#F59E0B;margin-top:4px;">{data['citas']['tasa_show_pct']}%</div>
+          <div style="font-size:11px;color:var(--text-soft);">{data['citas']['completadas']} completadas / {data['citas']['no_show']} no_show</div>
+        </div>
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">👥 Nuevos pacientes</div>
+          <div style="font-size:30px;font-weight:800;color:#8B5CF6;margin-top:4px;">{data['pacientes']['nuevos_periodo']}</div>
+          <div style="font-size:11px;color:var(--text-soft);">{data['pacientes']['activos_total']} activos en total</div>
+        </div>
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">💰 LTV promedio</div>
+          <div style="font-size:22px;font-weight:800;color:#10B981;margin-top:4px;">${data['ltv']['promedio_cop']:,}</div>
+          <div style="font-size:11px;color:var(--text-soft);">Máx: ${data['ltv']['maximo_cop']:,} COP</div>
+        </div>
+      </div>
+
+      <!-- Gráfico tendencia -->
+      <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;">
+        <h2 style="font-size:15px;font-weight:700;margin-bottom:14px;">📈 Tendencia de mensajes entrantes</h2>
+        {sparkline}
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+        <!-- Volumen por canal (ROI insight) -->
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:20px;">
+          <h2 style="font-size:15px;font-weight:700;margin-bottom:14px;">📲 Volumen por canal</h2>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <span style="font-size:13px;color:#374151;display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;background:#25D366;border-radius:3px;"></span>WhatsApp</span>
+              <strong style="color:#25D366;">{data['volumen_canal']['whatsapp']} ({data['volumen_canal']['pct_whatsapp']}%)</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <span style="font-size:13px;color:#374151;display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;background:#E1306C;border-radius:3px;"></span>Instagram</span>
+              <strong style="color:#E1306C;">{data['volumen_canal']['instagram']} ({data['volumen_canal']['pct_instagram']}%)</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <span style="font-size:13px;color:#374151;display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;background:#3B82F6;border-radius:3px;"></span>Email</span>
+              <strong style="color:#3B82F6;">{data['volumen_canal']['email']} ({data['volumen_canal']['pct_email']}%)</strong>
+            </div>
+          </div>
+          <p style="font-size:11px;color:var(--text-soft);margin-top:14px;line-height:1.5;">💡 <strong>ROI insight:</strong> Concentrá tu marketing en el canal con más volumen relativo a tu inversión.</p>
+        </div>
+
+        <!-- Top tratamientos -->
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:20px;">
+          <h2 style="font-size:15px;font-weight:700;margin-bottom:14px;">🩺 Top 5 tratamientos</h2>
+          {barras_html if barras_html else '<p style="color:#9CA3AF;text-align:center;padding:20px;">Sin tratamientos registrados</p>'}
+        </div>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+
+# ════════════════════════════════════════════════════════════
+# 10.7) PACIENTES EN RIESGO — Studio flagship feature
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/pacientes-riesgo", response_class=HTMLResponse)
+async def vista_pacientes_riesgo(
+    score_min: int = 40,
+    clinic_session: Optional[str] = Cookie(None),
+):
+    """Lista de pacientes con riesgo de fuga. Feature Studio."""
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    es_studio = (clinica.plan or "").lower() == "studio"
+
+    # Si no es Studio, mostrar página de upgrade
+    if not es_studio:
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Pacientes en riesgo - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes-riesgo", sesion, clinica)}
+    <main class="main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">🛡 Pacientes en riesgo</h1>
+      <p style="color:var(--text-soft);margin-bottom:28px;">Detección automática de pacientes a punto de perderse</p>
+
+      <div style="max-width:700px;background:linear-gradient(135deg,#FAFAFF,white);border:2px solid #8B5CF6;border-radius:18px;padding:36px;text-align:center;">
+        <div style="font-size:54px;margin-bottom:14px;">⭐</div>
+        <h2 style="font-size:22px;font-weight:800;margin-bottom:8px;">Feature exclusiva Studio</h2>
+        <p style="color:var(--text-soft);font-size:15px;line-height:1.6;margin-bottom:24px;">
+          Detección de pacientes en riesgo de fuga es una de las funciones flagship del plan Studio.
+          Lapora analiza el comportamiento de tus pacientes (citas no completadas, días sin contacto,
+          mensajes sin respuesta, sentimiento de conversaciones) y te avisa <strong>ANTES</strong> de que pierdas a alguien.
+        </p>
+
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:24px;text-align:left;">
+          <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#8B5CF6;">EJEMPLO REAL</h3>
+          <div style="display:flex;gap:14px;align-items:start;background:#FEF2F2;border-left:4px solid #DC2626;padding:12px;border-radius:6px;margin-bottom:10px;">
+            <div style="font-size:24px;">🚨</div>
+            <div>
+              <strong>María Camila Rojas</strong> · Riesgo 88/100<br>
+              <span style="font-size:13px;color:var(--text-soft);">Canceló su última cita y no reagendó. 35 días sin contacto.</span><br>
+              <span style="font-size:12px;color:#DC2626;font-weight:700;">→ Acción: Llamar HOY para reagendar</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px;align-items:start;background:#FFFBEB;border-left:4px solid #F59E0B;padding:12px;border-radius:6px;">
+            <div style="font-size:24px;">⚠</div>
+            <div>
+              <strong>Carlos Pérez</strong> · Riesgo 52/100<br>
+              <span style="font-size:13px;color:var(--text-soft);">Tratamiento de ortodoncia sin cita en 48 días.</span><br>
+              <span style="font-size:12px;color:#F59E0B;font-weight:700;">→ Acción: WhatsApp esta semana</span>
+            </div>
+          </div>
+        </div>
+
+        <a href="https://wa.me/573228783019?text=Hola+quiero+subir+a+Studio+por+Detecci%C3%B3n+de+Riesgo" style="display:inline-block;background:#8B5CF6;color:white;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;">⭐ Subir a Studio — $250 USD/mes</a>
+        <p style="font-size:12px;color:var(--text-soft);margin-top:14px;">
+          ROI promedio: si retenés 2 pacientes/mes en estética ($800k+), pagás Studio.
+        </p>
+      </div>
+    </main>
+  </div>
+</body></html>""")
+
+    # === Es Studio — mostrar dashboard real ===
+    from agent.clinic_risk import listar_pacientes_en_riesgo, metricas_riesgo
+
+    score_min = max(0, min(100, int(score_min)))
+    en_riesgo = await listar_pacientes_en_riesgo(clinica.id, score_minimo=score_min, limite=50)
+    metricas = await metricas_riesgo(clinica.id)
+
+    def esc(s): return html.escape(s or "", quote=True)
+
+    # Tarjetas por paciente
+    tarjetas = ""
+    if not en_riesgo:
+        tarjetas = '<div style="text-align:center;padding:60px;background:#F0FDF4;border:1px solid #10B981;border-radius:14px;color:#065F46;"><div style="font-size:42px;margin-bottom:10px;">✓</div><strong style="font-size:18px;">Ninguno en riesgo — tus pacientes están sanos</strong><p style="margin-top:8px;font-size:13px;">Seguí con la cadencia normal de atención.</p></div>'
+    else:
+        for r in en_riesgo:
+            p = r["paciente"]
+            nivel = r["nivel"]
+            score = r["score"]
+            color_nivel = {"alto": "#DC2626", "medio": "#F59E0B", "bajo": "#10B981"}.get(nivel, "#6B7280")
+            bg_nivel = {"alto": "#FEF2F2", "medio": "#FFFBEB", "bajo": "#F0FDF4"}.get(nivel, "#F9FAFB")
+            emoji = {"alto": "🚨", "medio": "⚠", "bajo": "✓"}.get(nivel, "")
+
+            razones_html = "".join(f"<li>{esc(rz)}</li>" for rz in r["razones"][:4])
+            tarjetas += f"""
+            <div style="background:white;border:1px solid var(--border);border-left:5px solid {color_nivel};border-radius:12px;padding:18px;margin-bottom:12px;display:flex;gap:18px;align-items:start;">
+                <div style="font-size:32px;flex-shrink:0;">{emoji}</div>
+                <div style="flex:1;min-width:0;">
+                    <div style="display:flex;justify-content:space-between;align-items:start;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
+                        <div>
+                            <a href="/clinic/app/pacientes/{p.id}" style="font-size:16px;font-weight:700;color:#111827;text-decoration:none;">{esc(p.nombre[:50])}</a>
+                            <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">{esc(p.telefono or '')} · {esc(p.tratamiento_actual or 'sin tratamiento')}</div>
+                        </div>
+                        <div style="background:{color_nivel};color:white;padding:4px 14px;border-radius:14px;font-size:13px;font-weight:800;">
+                            {score}/100
+                        </div>
+                    </div>
+                    <ul style="font-size:13px;color:#374151;margin:8px 0 12px 18px;line-height:1.6;">{razones_html}</ul>
+                    <div style="background:{bg_nivel};border:1px solid {color_nivel}33;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;color:{color_nivel};">
+                        → {esc(r['accion_sugerida'])}
+                    </div>
+                    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+                        <a href="https://wa.me/{esc((p.telefono or '').replace('+',''))}" target="_blank" class="btn btn-ghost" style="font-size:12px;padding:6px 12px;">💬 WhatsApp</a>
+                        <a href="/clinic/app/citas/nueva?paciente_id={p.id}" class="btn btn-ghost" style="font-size:12px;padding:6px 12px;">📅 Agendar cita</a>
+                        <a href="/clinic/app/pacientes/{p.id}" class="btn btn-ghost" style="font-size:12px;padding:6px 12px;">👁 Ver detalle</a>
+                    </div>
+                </div>
+            </div>"""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Pacientes en riesgo - Lapora Clinic</title>{CSS_CLINIC}</head>
+<body>
+  <div class="app-wrap">
+    {sidebar_clinic("pacientes-riesgo", sesion, clinica)}
+    <main class="main">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:20px;flex-wrap:wrap;gap:14px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px;">🛡 Pacientes en riesgo de fuga</h1>
+          <p style="color:var(--text-soft);">Detección automática con scoring 0-100 · <span style="color:#8B5CF6;font-weight:700;">STUDIO</span></p>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px;">
+        <div style="background:#FEF2F2;border:1px solid #DC2626;border-radius:12px;padding:16px;">
+          <div style="font-size:11px;color:#DC2626;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Alto riesgo</div>
+          <div style="font-size:28px;font-weight:800;color:#DC2626;margin-top:4px;">{metricas['alto_riesgo']}</div>
+          <div style="font-size:11px;color:var(--text-soft);">Contactar HOY</div>
+        </div>
+        <div style="background:#FFFBEB;border:1px solid #F59E0B;border-radius:12px;padding:16px;">
+          <div style="font-size:11px;color:#F59E0B;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Medio riesgo</div>
+          <div style="font-size:28px;font-weight:800;color:#F59E0B;margin-top:4px;">{metricas['medio_riesgo']}</div>
+          <div style="font-size:11px;color:var(--text-soft);">Esta semana</div>
+        </div>
+        <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:16px;">
+          <div style="font-size:11px;color:var(--text-soft);font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Total en riesgo</div>
+          <div style="font-size:28px;font-weight:800;color:#111827;margin-top:4px;">{metricas['total_riesgo']}</div>
+          <div style="font-size:11px;color:var(--text-soft);">De tu base</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#FEF2F2,#FFF7ED);border:1px solid #DC2626;border-radius:12px;padding:16px;">
+          <div style="font-size:11px;color:#DC2626;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Valor en riesgo</div>
+          <div style="font-size:24px;font-weight:800;color:#DC2626;margin-top:4px;">${metricas['valor_en_riesgo_cop']:,} COP</div>
+          <div style="font-size:11px;color:var(--text-soft);">Si los perdés</div>
+        </div>
+      </div>
+
+      <!-- Filtro score -->
+      <div style="background:white;border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:12px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.05em;">Filtrar:</span>
+        <a href="?score_min=70" style="padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;{'background:#DC2626;color:white' if score_min == 70 else 'background:white;color:#DC2626;border:1px solid #DC2626'};">Solo alto (70+)</a>
+        <a href="?score_min=40" style="padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;{'background:#F59E0B;color:white' if score_min == 40 else 'background:white;color:#F59E0B;border:1px solid #F59E0B'};">Medio + alto (40+)</a>
+        <a href="?score_min=0" style="padding:6px 14px;border-radius:14px;font-size:12px;font-weight:700;text-decoration:none;{'background:#6B7280;color:white' if score_min == 0 else 'background:white;color:#6B7280;border:1px solid #6B7280'};">Todos</a>
+      </div>
+
+      {tarjetas}
+    </main>
+  </div>
+</body></html>""")
+
+
+# ════════════════════════════════════════════════════════════
+# 10.8) BACKUP DESCARGABLE — Studio export ZIP
+# ════════════════════════════════════════════════════════════
+
+@router.get("/app/backup")
+async def descargar_backup(clinic_session: Optional[str] = Cookie(None)):
+    """Genera ZIP con CSV de todos los datos de la clínica. Solo Studio.
+
+    Incluye:
+    - pacientes.csv (todo el paciente schema)
+    - citas.csv
+    - mensajes.csv (últimos 90 días para no inflar)
+    - llamadas.csv
+    - plantillas.csv
+    - metadata.json (info de la clínica + timestamp del backup)
+    """
+    from fastapi.responses import StreamingResponse
+    import io as _io
+    import zipfile as _zipfile
+    import csv as _csv_mod
+    import json as _json_mod
+    from datetime import datetime as _dt, timedelta as _td
+
+    sesion = obtener_sesion(clinic_session)
+    if not sesion:
+        return RedirectResponse("/clinic/login", status_code=303)
+    clinica = await obtener_clinica(sesion["clinica_id"])
+    if not clinica:
+        return RedirectResponse("/clinic/login", status_code=303)
+
+    if (clinica.plan or "").lower() != "studio":
+        return RedirectResponse("/clinic/app/configuracion?error=Backup+descargable+es+feature+Studio", status_code=303)
+
+    # Generar ZIP en memoria
+    zip_buffer = _io.BytesIO()
+    ahora = _dt.utcnow()
+    desde_mensajes = ahora - _td(days=90)
+
+    with _zipfile.ZipFile(zip_buffer, "w", _zipfile.ZIP_DEFLATED) as zf:
+        # 1. Metadata
+        metadata = {
+            "clinica_id": clinica.id,
+            "clinica_nombre": clinica.nombre,
+            "clinica_slug": clinica.slug,
+            "plan": clinica.plan,
+            "ciudad": clinica.ciudad,
+            "especialidad": clinica.especialidad,
+            "backup_timestamp": ahora.isoformat(),
+            "incluye": {
+                "pacientes": "todos",
+                "citas": "todas",
+                "mensajes": "últimos 90 días",
+                "llamadas": "últimas 365 días",
+                "plantillas": "todas",
+            },
+        }
+        zf.writestr("metadata.json", _json_mod.dumps(metadata, ensure_ascii=False, indent=2))
+
+        # 2. Pacientes CSV
+        out = _io.StringIO()
+        w = _csv_mod.writer(out)
+        w.writerow([
+            "id", "nombre", "telefono", "email", "documento", "estado",
+            "tratamiento_actual", "alergias", "notas_basicas",
+            "total_mensajes", "total_citas", "valor_total",
+            "primer_contacto", "ultimo_contacto", "fuente",
+        ])
+        async with async_session() as session:
+            pacientes = list((await session.execute(
+                select(Paciente).where(Paciente.clinica_id == clinica.id)
+            )).scalars().all())
+        for p in pacientes:
+            w.writerow([
+                p.id, p.nombre, p.telefono, p.email, p.documento, p.estado,
+                p.tratamiento_actual or "", p.alergias or "", p.notas_basicas or "",
+                p.total_mensajes or 0, p.total_citas or 0, p.valor_total or 0,
+                p.primer_contacto.isoformat() if p.primer_contacto else "",
+                p.ultimo_contacto.isoformat() if p.ultimo_contacto else "",
+                p.fuente or "",
+            ])
+        zf.writestr("pacientes.csv", out.getvalue())
+
+        # 3. Citas CSV
+        out = _io.StringIO()
+        w = _csv_mod.writer(out)
+        w.writerow(["id", "paciente_id", "fecha_hora", "duracion_min", "estado", "motivo", "notas"])
+        async with async_session() as session:
+            citas = list((await session.execute(
+                select(CitaClinic).where(CitaClinic.clinica_id == clinica.id)
+            )).scalars().all())
+        for c in citas:
+            w.writerow([
+                c.id, c.paciente_id, c.fecha_hora.isoformat(),
+                c.duracion_min or 30, c.estado, c.motivo or "", c.notas or "",
+            ])
+        zf.writestr("citas.csv", out.getvalue())
+
+        # 4. Mensajes CSV (90 días)
+        out = _io.StringIO()
+        w = _csv_mod.writer(out)
+        w.writerow(["id", "paciente_id", "canal", "direccion", "contenido", "leido", "respondido_por", "timestamp"])
+        async with async_session() as session:
+            mensajes = list((await session.execute(
+                select(MensajeUnificado)
+                .where(MensajeUnificado.clinica_id == clinica.id)
+                .where(MensajeUnificado.timestamp >= desde_mensajes)
+                .order_by(MensajeUnificado.timestamp)
+            )).scalars().all())
+        for m in mensajes:
+            w.writerow([
+                m.id, m.paciente_id, m.canal, m.direccion,
+                (m.contenido or "")[:2000], bool(m.leido),
+                m.respondido_por or "", m.timestamp.isoformat(),
+            ])
+        zf.writestr("mensajes.csv", out.getvalue())
+
+        # 5. Llamadas CSV
+        out = _io.StringIO()
+        w = _csv_mod.writer(out)
+        w.writerow(["id", "paciente_id", "direccion", "duracion_seg", "resultado", "notas", "timestamp"])
+        async with async_session() as session:
+            llamadas = list((await session.execute(
+                select(Llamada).where(Llamada.clinica_id == clinica.id)
+                .where(Llamada.timestamp >= ahora - _td(days=365))
+            )).scalars().all())
+        for l in llamadas:
+            w.writerow([
+                l.id, l.paciente_id, l.direccion, l.duracion_seg or 0,
+                l.resultado or "", l.notas or "", l.timestamp.isoformat(),
+            ])
+        zf.writestr("llamadas.csv", out.getvalue())
+
+        # 6. Plantillas
+        out = _io.StringIO()
+        w = _csv_mod.writer(out)
+        w.writerow(["id", "titulo", "categoria", "contenido", "usos", "creado_en"])
+        async with async_session() as session:
+            plantillas = list((await session.execute(
+                select(PlantillaRespuesta).where(PlantillaRespuesta.clinica_id == clinica.id)
+            )).scalars().all())
+        for pl in plantillas:
+            w.writerow([
+                pl.id, pl.titulo, pl.categoria or "",
+                pl.contenido or "", pl.usos or 0,
+                pl.creado_en.isoformat() if pl.creado_en else "",
+            ])
+        zf.writestr("plantillas.csv", out.getvalue())
+
+        # 7. README
+        readme = f"""LAPORA CLINIC — BACKUP COMPLETO
+================================
+
+Clínica: {clinica.nombre}
+Slug: {clinica.slug}
+Plan: {clinica.plan}
+Generado: {ahora.strftime('%d/%m/%Y %H:%M UTC')}
+
+Contenido del ZIP:
+- metadata.json        — Info de la clínica + scope del backup
+- pacientes.csv        — Todos los pacientes
+- citas.csv            — Todas las citas (cualquier estado)
+- mensajes.csv         — Últimos 90 días de mensajes
+- llamadas.csv         — Últimos 365 días de llamadas
+- plantillas.csv       — Todas las plantillas de respuesta
+
+Encoding: UTF-8
+Separador CSV: coma (,)
+Quote: doble comilla (")
+
+Restore: contactar a soporte@lapora.studio para asistencia.
+"""
+        zf.writestr("README.txt", readme)
+
+    zip_buffer.seek(0)
+    filename = f"lapora-backup-{clinica.slug}-{ahora.strftime('%Y%m%d-%H%M')}.zip"
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ════════════════════════════════════════════════════════════
