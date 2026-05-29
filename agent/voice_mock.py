@@ -224,11 +224,14 @@ async def simular_conversacion_completa(call: VoiceCall) -> dict:
     inicio = datetime.utcnow()
 
     # === Turno 1: apertura del bot ===
+    # Pasamos teléfono y clinica_id para que el brain cargue contexto cross-canal
     turno_bot = await generar_turno(
         script_id=call.script_id or "outreach_medicos",
         variables=variables,
         historial=[],
         primer_turno=True,
+        telefono_target=call.telefono,
+        clinica_id=call.clinica_id,
     )
     transcripts.append({
         "quien": "bot",
@@ -269,6 +272,8 @@ async def simular_conversacion_completa(call: VoiceCall) -> dict:
             historial=historial_bot,
             transcript_usuario=resp_prospecto,
             primer_turno=False,
+            telefono_target=call.telefono,
+            clinica_id=call.clinica_id,
         )
         transcripts.append({
             "quien": "bot",

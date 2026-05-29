@@ -338,6 +338,8 @@ async def generar_turno(
     historial: list[dict],
     transcript_usuario: str = "",
     primer_turno: bool = False,
+    telefono_target: str = "",
+    clinica_id: Optional[int] = None,
 ) -> RespuestaBot:
     """Genera el siguiente turno del bot.
 
@@ -356,11 +358,23 @@ async def generar_turno(
     temperatura = config.get("config_global", {}).get("llm", {}).get("temperatura", 0.4)
     modelo = config.get("config_global", {}).get("llm", {}).get("modelo", "claude-sonnet-4-6")
 
-    # System prompt en 2 bloques para aprovechar Anthropic prompt caching:
-    # Bloque 1 (cacheable): base + few-shot — idéntico para todos los targets del mismo script
+    # System prompt en bloques para aprovechar Anthropic prompt caching:
+    # Bloque 1 (cacheable): base + few-shot — idéntico para todos los targets
     # Bloque 2 (no cacheable): variables del target específico
+    # Bloque 3 (no cacheable): contexto cross-canal si lo hay
     base_prompt = _construir_base_prompt(script_id)
     seccion_dinamica = construir_system_prompt(script_id, variables)[len(base_prompt):]
+
+    # Memoria cross-canal: chats/llamadas previas con este teléfono
+    contexto_previo = ""
+    if telefono_target:
+        try:
+            from agent.contact_history import contexto_para_brain_voz
+            contexto_previo = await contexto_para_brain_voz(
+                telefono_target, clinica_id=clinica_id
+            )
+        except Exception as e:
+            logger.warning(f"[voice_brain] no se pudo cargar contexto previo: {e}")
 
     system_blocks = [
         {
@@ -370,6 +384,8 @@ async def generar_turno(
         },
         {"type": "text", "text": seccion_dinamica},
     ]
+    if contexto_previo:
+        system_blocks.append({"type": "text", "text": "\n\n" + contexto_previo})
 
     # Construir mensajes
     mensajes = list(historial)

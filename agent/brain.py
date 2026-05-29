@@ -277,6 +277,16 @@ async def generar_respuesta(
 
     system_prompt = cargar_system_prompt()
 
+    # Memoria cross-canal: inyectar contexto de llamadas previas (si las hay)
+    if telefono_usuario:
+        try:
+            from agent.contact_history import contexto_para_brain_chat
+            contexto_llamadas = await contexto_para_brain_chat(telefono_usuario, clinica_id=None)
+            if contexto_llamadas:
+                system_prompt = f"{system_prompt}\n\n{contexto_llamadas}"
+        except Exception as e:
+            logger.warning(f"No se pudo cargar contexto cross-canal: {e}")
+
     # Construir mensajes
     mensajes = []
     for msg in historial:

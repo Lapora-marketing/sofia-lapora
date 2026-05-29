@@ -283,6 +283,17 @@ async def generar_respuesta_clinica(
         system_prompt = construir_system_prompt(clinica, plantillas, paciente)
         historial = await obtener_historial_paciente(clinica.id, paciente.id)
 
+        # Memoria cross-canal per-tenant: agregar resumen de llamadas previas
+        try:
+            from agent.contact_history import contexto_para_brain_chat
+            contexto_llamadas = await contexto_para_brain_chat(
+                paciente.telefono, clinica_id=clinica.id
+            )
+            if contexto_llamadas:
+                system_prompt = f"{system_prompt}\n\n{contexto_llamadas}"
+        except Exception as e:
+            logger.warning(f"[clinic_brain] contexto cross-canal falló: {e}")
+
         # Armar mensajes (historial NO incluye el mensaje actual)
         mensajes = list(historial)
         mensajes.append({"role": "user", "content": mensaje})
