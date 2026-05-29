@@ -332,7 +332,10 @@ async def voice_dashboard(
     saltados_dup: Optional[int] = None,
     mock_on: Optional[str] = None,
     mock_off: Optional[str] = None,
+    bulk_disparado: Optional[int] = None,
     error: Optional[str] = None,
+    page: int = 1,
+    outcome: Optional[str] = None,
     user: str = Depends(verificar_voice_admin),
 ):
     """UI admin para gestionar el Voice Bot — visible en /voice/dashboard.
@@ -343,9 +346,21 @@ async def voice_dashboard(
     - Tabla últimas 20 llamadas con transcripts expandibles
     - Botón pausar/reanudar (Día 7+ feature)
     """
-    # Datos — Paralelizar las 4 queries con asyncio.gather (~3x speedup en P95)
+    # Paginación + filtros
     from agent.voice_models import VoiceOptOut
+    from sqlalchemy import func as _func
     import asyncio as _asyncio
+
+    page = max(1, int(page or 1))
+    PER_PAGE = 20
+    offset = (page - 1) * PER_PAGE
+
+    # Whitelist de outcomes válidos (defensa contra SQL injection)
+    OUTCOMES_VALIDOS = {
+        "interested", "not_interested", "callback", "voicemail",
+        "no_answer", "opt_out", "failed", "wrong_number",
+    }
+    outcome_filtro = outcome if outcome in OUTCOMES_VALIDOS else None
 
     async def _query_cola():
         async with async_session() as s:
@@ -359,10 +374,19 @@ async def voice_dashboard(
 
     async def _query_calls():
         async with async_session() as s:
-            r = await s.execute(
-                select(VoiceCall).order_by(desc(VoiceCall.creada_en)).limit(20)
-            )
+            q = select(VoiceCall)
+            if outcome_filtro:
+                q = q.where(VoiceCall.outcome == outcome_filtro)
+            q = q.order_by(desc(VoiceCall.creada_en)).limit(PER_PAGE).offset(offset)
+            r = await s.execute(q)
             return list(r.scalars().all())
+
+    async def _query_total_calls():
+        async with async_session() as s:
+            q = select(_func.count(VoiceCall.id))
+            if outcome_filtro:
+                q = q.where(VoiceCall.outcome == outcome_filtro)
+            return (await s.execute(q)).scalar() or 0
 
     async def _query_optouts():
         async with async_session() as s:
@@ -371,15 +395,17 @@ async def voice_dashboard(
             )
             return list(r.scalars().all())
 
-    metrics, cfg, cola, calls, optouts = await _asyncio.gather(
+    metrics, cfg, cola, calls, total_calls, optouts = await _asyncio.gather(
         metricas_voice(),
         obtener_config_voice(),
         _query_cola(),
         _query_calls(),
+        _query_total_calls(),
         _query_optouts(),
     )
     pausado_actual = bool(cfg.scheduler_pausado)
     mock_actual = bool(cfg.mock_mode) or os.getenv("VOICE_MOCK_MODE", "").lower() in ("1", "true", "yes")
+    total_pages = max(1, (total_calls + PER_PAGE - 1) // PER_PAGE)
 
     def esc(s):
         return _html.escape(str(s or ""), quote=True)
@@ -470,6 +496,8 @@ async def voice_dashboard(
         banner = '<div style="background:#EDE9FE;border:1px solid #8B5CF6;color:#5B21B6;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">🎭 Mock Mode ACTIVADO — las llamadas se simulan con Claude. NO se llama a Twilio real. WhatsApp follow-ups SÍ se envían de verdad.</div>'
     elif mock_off == "1":
         banner = '<div style="background:#F3F4F6;border:1px solid #6B7280;color:#374151;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">Mock Mode desactivado — vuelve a usar Twilio real (necesita credenciales).</div>'
+    elif bulk_disparado is not None:
+        banner = f'<div style="background:#EDE9FE;border:1px solid #8B5CF6;color:#5B21B6;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">🚀 {bulk_disparado} simulaciones disparadas en background. Refrescá en ~{int(bulk_disparado * 12)}s para ver resultados (~12s por simulación + 2s throttle).</div>'
     elif error:
         banner = f'<div style="background:#FEE2E2;border:1px solid #EF4444;color:#7F1D1D;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;">⚠ {esc(error)}</div>'
 
@@ -489,6 +517,33 @@ async def voice_dashboard(
             <button type="submit" style="background:#F59E0B;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">⏸ Pausar scheduler</button>
         </form>'''
         estado_visual = '<span style="background:#D1FAE5;color:#065F46;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">● Activo</span>'
+
+    # Bloque filtros para histórico
+    def _link_filtro(label: str, value: Optional[str], color: str) -> str:
+        activo = (outcome_filtro == value) or (value is None and outcome_filtro is None)
+        href_params = f"?outcome={value}" if value else ""
+        if activo:
+            return f'<a href="/voice/dashboard{href_params}" style="background:{color};color:white;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:700;text-decoration:none;text-transform:uppercase;letter-spacing:0.04em;">{label}</a>'
+        return f'<a href="/voice/dashboard{href_params}" style="background:white;color:{color};border:1px solid {color}44;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;text-decoration:none;text-transform:uppercase;letter-spacing:0.04em;">{label}</a>'
+
+    filtros_html = " ".join([
+        _link_filtro("Todos", None, "#6B7280"),
+        _link_filtro("Interested", "interested", "#10B981"),
+        _link_filtro("Callback", "callback", "#3B82F6"),
+        _link_filtro("Not interested", "not_interested", "#9CA3AF"),
+        _link_filtro("Voicemail", "voicemail", "#F59E0B"),
+        _link_filtro("No answer", "no_answer", "#FCA5A5"),
+        _link_filtro("Opt-out", "opt_out", "#7C2D12"),
+        _link_filtro("Failed", "failed", "#EF4444"),
+    ])
+
+    # Paginación
+    base_params = f"&outcome={outcome_filtro}" if outcome_filtro else ""
+    nav_pag = ""
+    if total_pages > 1:
+        prev_link = f'<a href="/voice/dashboard?page={page-1}{base_params}" style="padding:6px 12px;border:1px solid #E5E7EB;border-radius:6px;font-size:12px;text-decoration:none;color:#374151;">← Anterior</a>' if page > 1 else '<span style="padding:6px 12px;color:#D1D5DB;font-size:12px;">← Anterior</span>'
+        next_link = f'<a href="/voice/dashboard?page={page+1}{base_params}" style="padding:6px 12px;border:1px solid #E5E7EB;border-radius:6px;font-size:12px;text-decoration:none;color:#374151;">Siguiente →</a>' if page < total_pages else '<span style="padding:6px 12px;color:#D1D5DB;font-size:12px;">Siguiente →</span>'
+        nav_pag = f'<div style="display:flex;align-items:center;gap:10px;font-size:12px;color:#6B7280;">{prev_link}<span>Página <strong>{page}</strong> de {total_pages} · {total_calls} llamadas{(" filtradas" if outcome_filtro else "")}</span>{next_link}</div>'
 
     return HTMLResponse(f"""<!DOCTYPE html><html lang="es"><head>
 <meta charset="UTF-8"><title>SofIA Llama — Dashboard</title>
@@ -542,6 +597,7 @@ tr:last-child td{{border-bottom:none}}
     <form method="post" action="/voice/scheduler/mock-toggle" style="display:inline;" onsubmit="return confirm('{'¿Desactivar Mock Mode? Volverás a Twilio real.' if mock_actual else '¿Activar Mock Mode? Las llamadas se simularán con Claude (sin Twilio). WhatsApp follow-ups SÍ se envían reales.'}');">
         <button type="submit" style="background:{'#6B7280' if mock_actual else '#8B5CF6'};color:white;border:none;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">{'❌ Desactivar Mock Mode' if mock_actual else '🎭 Activar Mock Mode'}</button>
     </form>
+    {('<form method="post" action="/voice/mock/bulk" style="display:inline;display:flex;align-items:center;gap:6px;" onsubmit="return confirm(\'¿Disparar simulaciones en lote? Cada una toma ~12 segundos y consume ~\\$0.004 USD en Claude. WhatsApp follow-ups SÍ se envían reales.\');"><select name="cantidad" style="border:1px solid #E5E7EB;border-radius:8px;padding:7px 10px;font-size:13px;font-weight:600;background:white;"><option value="10">10 llamadas</option><option value="25">25 llamadas</option><option value="50">50 llamadas</option><option value="99">Todas (99)</option></select><button type="submit" style="background:#8B5CF6;color:white;border:none;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">🚀 Simular en lote</button></form>' if mock_actual else '')}
     <a href="/voice/dashboard" style="font-size:12px;color:#6B7280;text-decoration:underline;margin-left:auto;">↻ Refrescar</a>
 </div>
 
@@ -573,11 +629,22 @@ tr:last-child td{{border-bottom:none}}
 </div>
 
 <div class="card">
-    <div class="card-header"><h2>📜 Últimas 20 llamadas</h2><span class="badge-conv">Conversión: {tasa_conv}%</span></div>
+    <div class="card-header" style="flex-wrap:wrap;gap:10px;">
+        <h2>📜 Histórico de llamadas</h2>
+        <span class="badge-conv">Conversión: {tasa_conv}%</span>
+    </div>
+    <div style="padding:12px 18px;border-bottom:1px solid #E5E7EB;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <span style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;margin-right:6px;">Filtrar outcome:</span>
+        {filtros_html}
+    </div>
     <table>
         <thead><tr><th>Cuándo</th><th>Target</th><th>Outcome</th><th>Duración</th><th>Costo</th><th>Resumen IA</th></tr></thead>
         <tbody>{filas_calls}</tbody>
     </table>
+    <div style="padding:14px 18px;border-top:1px solid #F3F4F6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <span style="font-size:12px;color:#9CA3AF;">Mostrando {len(calls)} de {total_calls} llamadas{(" filtradas por " + outcome_filtro if outcome_filtro else "")}</span>
+        {nav_pag}
+    </div>
 </div>
 
 <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;padding:18px;font-size:13px;color:#6B7280;line-height:1.6;">
@@ -658,6 +725,98 @@ async def encolar_prospectos_default(user: str = Depends(verificar_voice_admin))
         url=f"/voice/dashboard?encolados={encolados}&saltados_opt={saltados_optout}&saltados_dup={saltados_duplicados}",
         status_code=303,
     )
+
+
+@router.post("/mock/bulk")
+async def mock_bulk_dispatch(
+    cantidad: int = Form(10),
+    user: str = Depends(verificar_voice_admin),
+):
+    """Dispara N llamadas en MOCK MODE en lote.
+
+    Solo funciona si mock_mode está activo (safety: nunca dispara llamadas reales en lote).
+    Bypassa horario hábil y throttle (admin override).
+    NO bypassa opt-out.
+
+    El worker corre en background con throttle interno de 2s entre llamadas
+    para no saturar la API de Claude.
+
+    cantidad: 1-200 (clamped). Si cantidad > entries en cola, dispara todas las disponibles.
+    """
+    from agent.voice_models import esta_en_mock_mode
+
+    # Safety crítico: NUNCA hacer bulk fuera de mock mode
+    if not await esta_en_mock_mode():
+        return RedirectResponse(
+            url="/voice/dashboard?error=Mock+Mode+debe+estar+ACTIVO+para+disparar+en+lote",
+            status_code=303,
+        )
+
+    # Clamp cantidad
+    n = max(1, min(int(cantidad), 200))
+
+    # Agarrar N entries queued (FIFO por prioridad)
+    async with async_session() as session:
+        entries = list((await session.execute(
+            select(VoiceQueue)
+            .where(VoiceQueue.estado == "queued")
+            .where(VoiceQueue.intentos_restantes > 0)
+            .order_by(desc(VoiceQueue.prioridad), VoiceQueue.programada_para)
+            .limit(n)
+        )).scalars().all())
+
+    if not entries:
+        return RedirectResponse(
+            url="/voice/dashboard?error=Cola+vacia+-+nada+para+disparar",
+            status_code=303,
+        )
+
+    # Disparar en background con throttle entre llamadas
+    import asyncio as _asyncio
+    _asyncio.create_task(_bulk_dispatch_background([e.id for e in entries]))
+
+    return RedirectResponse(
+        url=f"/voice/dashboard?bulk_disparado={len(entries)}",
+        status_code=303,
+    )
+
+
+async def _bulk_dispatch_background(queue_ids: list[int]):
+    """Worker en background que dispara las entries con throttle interno.
+
+    2 segundos entre cada disparo para:
+    - No saturar Anthropic API rate limits
+    - Dejar que cada simulación termine antes de empezar la siguiente
+    - Distribuir carga en la BD
+    """
+    from agent.voice_workers import disparar_llamada
+    import asyncio as _asyncio
+
+    logger.info(f"[voice bulk] arrancando dispatch de {len(queue_ids)} entries")
+    exitos = 0
+    fallos = 0
+
+    for qid in queue_ids:
+        try:
+            async with async_session() as session:
+                entry = (await session.execute(
+                    select(VoiceQueue).where(VoiceQueue.id == qid)
+                )).scalar_one_or_none()
+            if not entry or entry.estado != "queued":
+                continue
+
+            call = await disparar_llamada(entry, worker_id="bulk_mock")
+            if call:
+                exitos += 1
+            else:
+                fallos += 1
+            # Throttle: 2s entre disparos
+            await _asyncio.sleep(2.0)
+        except Exception as e:
+            logger.error(f"[voice bulk] error qid={qid}: {e}", exc_info=True)
+            fallos += 1
+
+    logger.info(f"[voice bulk] terminado: {exitos} disparados, {fallos} fallos")
 
 
 @router.post("/scheduler/mock-toggle")
