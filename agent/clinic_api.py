@@ -20,6 +20,7 @@ Endpoints:
   GET  /api/v1/citas          — lista
   POST /api/v1/citas          — crear cita
   GET  /api/v1/mensajes       — últimos mensajes
+  POST /api/v1/mensajes       — registrar mensaje de conversación
 """
 
 from datetime import datetime
@@ -128,6 +129,14 @@ class CitaOut(BaseModel):
     duracion_min: int
     motivo: str
     estado: str
+
+
+class MensajeIn(BaseModel):
+    paciente_id: int
+    contenido: str = Field(..., min_length=1, max_length=5000)
+    canal: str = Field(default="instagram", max_length=30)
+    direccion: str = Field(default="entrada")
+    respondido_por: str = Field(default="", max_length=100)
 
 
 # ════════════════════════════════════════════════════════════
@@ -391,3 +400,48 @@ async def list_mensajes(
             "total_pages": (total + per_page - 1) // per_page,
         },
     }
+
+
+@router.post("/mensajes")
+async def create_mensaje(
+    mensaje: MensajeIn,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Registra un mensaje de conversación externa (ej: Instagram vía LaporaChat)."""
+    clinica, _ = await _autenticar(x_api_key, requiere_write=True)
+
+    if mensaje.direccion not in {"entrada", "salida"}:
+        raise HTTPException(
+            status_code=400,
+            detail="direccion debe ser 'entrada' o 'salida'",
+        )
+
+    async with async_session() as session:
+        paciente = (await session.execute(
+            select(Paciente)
+            .where(Paciente.id == mensaje.paciente_id)
+            .where(Paciente.clinica_id == clinica.id)  # aislamiento
+        )).scalar_one_or_none()
+        if not paciente:
+            raise HTTPException(status_code=404, detail="Paciente no encontrado en esta clínica")
+
+        m = MensajeUnificado(
+            clinica_id=clinica.id,
+            paciente_id=paciente.id,
+            canal=mensaje.canal,
+            direccion=mensaje.direccion,
+            contenido=mensaje.contenido,
+            leido=mensaje.direccion == "salida",
+            respondido_por=mensaje.respondido_por,
+            timestamp=datetime.utcnow(),
+        )
+        session.add(m)
+        paciente.ultimo_contacto = datetime.utcnow()
+        paciente.total_mensajes = (paciente.total_mensajes or 0) + 1
+        await session.commit()
+        await session.refresh(m)
+
+    return JSONResponse(
+        status_code=201,
+        content={"id": m.id, "paciente_id": m.paciente_id},
+    )
