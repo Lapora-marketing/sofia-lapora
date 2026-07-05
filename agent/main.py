@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Entorno: {ENVIRONMENT}")
     logger.info(f"  Scheduler SofIA CRM: ACTIVO (revisa cada 5 min)")
     logger.info(f"  Workers Lapora Clinic: {'ACTIVOS' if workers_clinic_iniciados else 'OFF'}")
-    logger.info(f"  Voice Bot scheduler: {'ACTIVO (Lun-Vie 9-12+14-17 CO)' if voice_workers_iniciados else 'OFF'}")
+    logger.info(f"  Voice Bot scheduler: {'ACTIVO (Lun-Vie 13-20 CO)' if voice_workers_iniciados else 'OFF'}")
     logger.info("=" * 60)
     yield
 

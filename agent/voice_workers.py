@@ -6,7 +6,7 @@
 Workers async del Voice Bot.
 
 Día 4: Scheduler que dispara llamadas respetando:
-1. Horario hábil Colombia: Lun-Vie 9-12am + 2-5pm (UTC-5)
+1. Horario hábil Colombia: Lun-Vie 1pm-8pm (UTC-5)
 2. Throttle: 1 llamada nueva cada 15 min (~16/día max)
 3. Locks: evita doble dispatch concurrente
 4. Reintentos: no-answer → reagenda +1 día, voicemail → +2 días
@@ -48,8 +48,7 @@ logger = logging.getLogger("agentkit")
 
 # Horario hábil (hora local Colombia)
 VENTANAS_HABILES = [
-    (dtime(9, 0),  dtime(12, 0)),    # Mañana 9-12
-    (dtime(14, 0), dtime(17, 0)),    # Tarde 2-5
+    (dtime(13, 0), dtime(20, 0)),    # Tarde-noche 1pm-8pm
 ]
 DIAS_HABILES = {0, 1, 2, 3, 4}        # Lun-Vie (Mon=0)
 
@@ -92,7 +91,7 @@ def _to_utc_naive(dt: datetime) -> datetime:
 
 
 def esta_en_horario_habil(dt: Optional[datetime] = None) -> bool:
-    """True si es Lun-Vie dentro de 9-12 o 14-17 hora Colombia."""
+    """True si es Lun-Vie dentro de 13-20 hora Colombia."""
     if dt is None:
         dt = hora_actual_co()
     if dt.weekday() not in DIAS_HABILES:
@@ -427,7 +426,7 @@ async def loop_scheduler(stop_event: asyncio.Event):
     """Loop principal: cada minuto revisa si toca disparar una llamada."""
     logger.info(
         f"[voice_workers] scheduler arrancado — check c/{INTERVALO_CHECK_SEG}s, "
-        f"throttle {THROTTLE_MIN_ENTRE_CALLS}min, horario Lun-Vie 9-12+14-17 CO"
+        f"throttle {THROTTLE_MIN_ENTRE_CALLS}min, horario Lun-Vie 13-20 CO"
     )
 
     # Delay inicial 30s para no chocar con startup
