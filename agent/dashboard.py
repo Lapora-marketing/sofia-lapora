@@ -798,6 +798,8 @@ def sidebar_html(activa: str, stats: dict | None = None) -> str:
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="9" y1="14" x2="13" y2="14"/></svg>'),
         ("pipeline", "Pipeline de Ventas", "/admin/pipeline", 0,
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="18" rx="1"/><rect x="11" y="3" width="6" height="14" rx="1"/><rect x="19" y="3" width="2" height="9" rx="1"/></svg>'),
+        ("laporachat", "🤖 LaporaChat", "/admin/laporachat", 0,
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><rect x="4" y="6" width="16" height="12" rx="2"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M8 18v3"/><path d="M16 18v3"/></svg>'),
         ("saas", "⚡ Lapora Clinic SaaS", "/clinic/superadmin", 0,
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>'),
         ("voice", "📞 SofIA Llama (calls)", "/voice/dashboard", 0,
@@ -3689,3 +3691,115 @@ async def mover_prospecto_estado(
         await session.commit()
 
     return JSONResponse({"ok": True, "id": prospecto_id, "estado": nuevo_estado})
+
+
+# ════════════════════════════════════════════════════════════
+# LAPORACHAT — Kit de venta del servicio de automatización IG
+# ════════════════════════════════════════════════════════════
+
+@router.get("/laporachat", response_class=HTMLResponse)
+async def vista_laporachat(user: str = Depends(verificar_credenciales)):
+    """Kit de venta de LaporaChat: pitch, planes, guion de demo y playbook de instalación."""
+    stats = await _obtener_stats()
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LaporaChat - Kit de venta - CRM</title>
+    {CSS_BASE}
+    <style>
+        .kit-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px; }}
+        @media (max-width: 980px) {{ .kit-grid {{ grid-template-columns: 1fr; }} }}
+        .pitch-box {{ font-size:15px; line-height:1.75; background:#FFF7ED; border:1px solid #FED7AA;
+                      border-radius:12px; padding:18px; color:#7C2D12; font-weight:500; }}
+        .tabla-planes {{ width:100%; border-collapse:collapse; font-size:13px; }}
+        .tabla-planes th, .tabla-planes td {{ padding:9px 10px; border-bottom:1px solid #F3F4F6; text-align:left; }}
+        .tabla-planes th {{ font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:#6B7280; }}
+        .tabla-planes .destacado {{ background:#FEF2F2; font-weight:600; }}
+        .kit-li {{ padding:10px 0; border-bottom:1px solid #F3F4F6; font-size:13.5px; line-height:1.6; }}
+        .kit-li:last-child {{ border-bottom:none; }}
+        .kit-li b {{ color:#111827; }}
+        .paso-num {{ display:inline-flex; width:22px; height:22px; border-radius:6px; background:#FF3B30;
+                     color:#fff; font-weight:700; font-size:12px; align-items:center; justify-content:center;
+                     margin-right:8px; flex-shrink:0; }}
+        .nota-kit {{ font-size:12px; color:#6B7280; margin-top:10px; line-height:1.6; }}
+    </style>
+</head>
+<body>
+    <div class="app">
+        {sidebar_html("laporachat", stats)}
+        <main class="main">
+            <div class="page-header">
+                <div>
+                    <div class="page-title">🤖 LaporaChat — Kit de venta</div>
+                    <div class="page-subtitle">Automatización de Instagram con IA: comentario → DM personalizado → cita con anticipo → CRM</div>
+                </div>
+                <button class="btn btn-secondary" onclick="window.print()">Imprimir</button>
+            </div>
+
+            <div class="card" style="margin-bottom:16px">
+                <div class="card-header"><div class="card-title">El pitch de una frase</div></div>
+                <div class="pitch-box">"Cada video tuyo se vuelve una máquina de captar clientes: la gente comenta una
+                palabra, y mi sistema les responde, les manda lo que pidieron al DM, les conversa con IA, les agenda
+                la cita con anticipo pago y te los deja organizados en un CRM — 24/7, mientras tú creas contenido."</div>
+            </div>
+
+            <div class="kit-grid">
+                <div class="card">
+                    <div class="card-header"><div class="card-title">Planes sugeridos (COP)</div></div>
+                    <table class="tabla-planes">
+                        <tr><th></th><th>Arranque</th><th class="destacado">Crecimiento ⭐</th><th>Pro</th></tr>
+                        <tr><td><b>Setup único</b></td><td>$350.000</td><td class="destacado">$350.000</td><td>$500.000</td></tr>
+                        <tr><td><b>Mensualidad</b></td><td>$250.000</td><td class="destacado">$450.000</td><td>$800.000</td></tr>
+                        <tr><td>Palabras clave</td><td>3</td><td class="destacado">Ilimitadas</td><td>Ilimitadas</td></tr>
+                        <tr><td>IA conversacional 24/7</td><td>—</td><td class="destacado">✔</td><td>✔</td></tr>
+                        <tr><td>Citas + anticipo Nequi</td><td>—</td><td class="destacado">✔</td><td>✔</td></tr>
+                        <tr><td>CRM con conversaciones</td><td>—</td><td class="destacado">✔</td><td>✔</td></tr>
+                        <tr><td>Llamada IA de confirmación</td><td>—</td><td class="destacado">—</td><td>✔</td></tr>
+                    </table>
+                    <div class="nota-kit">Anclas: ManyChat Pro (solo herramienta) ≈ $65-260k/mes · community manager
+                    $1.2M+/mes · recepcionista $1.4M+/mes. Costo marginal por cliente ≈ $0.</div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><div class="card-title">Demo en vivo — 10 minutos</div></div>
+                    <div class="kit-li"><span class="paso-num">1</span><b>El dolor:</b> "¿Cuántos DMs sin responder? ¿Cuántas citas que no llegan?"</div>
+                    <div class="kit-li"><span class="paso-num">2</span><b>El comentario mágico:</b> comenta "GUIA" en vivo → respuesta pública + DM personalizado por IA en segundos</div>
+                    <div class="kit-li"><span class="paso-num">3</span><b>La IA agenda:</b> pide cita → consulta el calendario real → reserva con anticipo de $20.000 al Nequi</div>
+                    <div class="kit-li"><span class="paso-num">4</span><b>El CRM:</b> el contacto aparece con su conversación completa</div>
+                    <div class="kit-li"><span class="paso-num">5</span><b>Cierre:</b> "Con tu marca y tu Nequi, andando en una semana: $350k montaje + $450k/mes. ¿Arrancamos con tu próximo video?"</div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><div class="card-title">Onboarding del cliente (10 min de su tiempo)</div></div>
+                    <div class="kit-li">Instagram <b>profesional</b> + 3 autorizaciones guiadas: aceptar invitación de evaluador, autorizar conexión, generar token — <b>nunca pide contraseñas</b></div>
+                    <div class="kit-li"><b>Datos:</b> horario de citas, servicios, precios que la IA puede decir, Nequi del anticipo</div>
+                    <div class="kit-li"><b>Contenido:</b> links de recursos (guía, portafolio, agenda) + primeras 3 palabras clave</div>
+                    <div class="kit-li"><b>Compromiso:</b> decir el CTA en cada video ("comenta X y te lo mando al DM")</div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><div class="card-title">Instalación por cliente (2-3 horas)</div></div>
+                    <div class="kit-li"><span class="paso-num">1</span><b>Meta:</b> invitar su cuenta como Evaluador de Instagram → acepta → conectar cuenta → generar token → activar suscripción al webhook</div>
+                    <div class="kit-li"><span class="paso-num">2</span><b>n8n:</b> credencial con su token · automatizaciones con campo cliente · su calendario · su horario y Nequi en el prompt de la IA</div>
+                    <div class="kit-li"><span class="paso-num">3</span><b>CRM:</b> clínica del cliente en Lapora Clinic + API key de escritura + credencial en n8n</div>
+                    <div class="kit-li"><span class="paso-num">4</span><b>Pruebas:</b> comentario → respuesta + DM · anti-duplicados · cita en calendario + CRM · follow gate</div>
+                    <div class="nota-kit">⚠ Playbook completo con las trampas conocidas: <b>herramientas/laporachat/plantilla-clientes/</b>
+                    en el equipo de Myke. Sin App Review de Meta solo disparan cuentas con rol de evaluador (máx. 50 —
+                    suficiente para los primeros clientes).</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><div class="card-title">Infraestructura del sistema (referencia rápida)</div></div>
+                <div class="kit-li"><b>Motor n8n:</b> mgelvez.app.n8n.cloud → "LaporaChat - Motor Meta" (webhook único de Meta, enruta por cuenta)</div>
+                <div class="kit-li"><b>App Meta:</b> LaporaChat (ID 1531868615281008) · webhook /webhook/laporachat-meta · verify token: laporachat</div>
+                <div class="kit-li"><b>IA:</b> Google Gemini (DMs personalizados con diagnóstico + agente de citas con memoria)</div>
+                <div class="kit-li"><b>Nichos priorizados:</b> clínicas estética/odontología (anticipo mata no-shows) · fotógrafos y creativos · restaurantes · infoproductores</div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>"""
