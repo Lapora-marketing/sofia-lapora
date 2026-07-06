@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LaporaChat — Tu ManyChat propio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0a0f; --surface:#12121a; --surface2:#191924; --surface3:#20202e;
+    --border:#242433; --border2:#32324a;
+    --text:#f4f4f8; --muted:#9c9cb0; --muted2:#6b6b80;
+    --primary:#7c5cff; --primary-soft:#7c5cff22; --primary-text:#b9a5ff;
+    --accent:#22e6a5; --accent-soft:#22e6a51e;
+    --info:#6da9ff; --warn:#ffb454; --danger:#ff5c7a;
+    --ig:#e879ba; --fb:#6da9ff; --wa:#4ade80; --yt:#ff6b6b;
+    --grad:linear-gradient(135deg,#7c5cff 0%,#22e6a5 100%);
+    --r-sm:10px; --r-md:14px; --r-lg:18px;
+    --font:'Inter',system-ui,sans-serif; --display:'Sora',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+    --shadow:0 8px 32px #00000055;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100dvh;font-size:15px;line-height:1.5}
+  ::selection{background:#7c5cff55}
+  :focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:4px}
+  button{cursor:pointer;font-family:var(--font)}
+  svg.ic{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+  @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+  /* ============ Layout: sidebar + main ============ */
+  .shell{display:flex;min-height:100dvh}
+  aside.side{width:236px;background:var(--surface);border-right:1px solid var(--border);padding:22px 14px;position:fixed;inset:0 auto 0 0;display:flex;flex-direction:column;gap:6px;z-index:20}
+  main.main{flex:1;margin-left:236px;padding:28px 32px 90px;max-width:1240px}
+  .brand{display:flex;align-items:center;gap:11px;padding:2px 8px 20px}
+  .brand .mark{width:38px;height:38px;border-radius:11px;background:var(--grad);display:flex;align-items:center;justify-content:center;font-family:var(--display);font-weight:800;font-size:19px;color:#0a0a0f}
+  .brand h1{font-family:var(--display);font-size:19px;font-weight:800;letter-spacing:-.4px}
+  .brand h1 em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .brand small{display:block;color:var(--muted2);font-size:10.5px;font-weight:500;letter-spacing:.3px}
+  .nav-btn{display:flex;align-items:center;gap:11px;width:100%;background:transparent;border:0;color:var(--muted);font-size:14px;font-weight:600;padding:11px 12px;border-radius:var(--r-sm);transition:.15s;text-align:left}
+  .nav-btn:hover{color:var(--text);background:var(--surface2)}
+  .nav-btn.active{color:var(--text);background:var(--surface3);box-shadow:inset 2px 0 0 var(--primary)}
+  .nav-btn .cnt{margin-left:auto;font-family:var(--mono);font-size:11px;background:var(--primary-soft);color:var(--primary-text);padding:2px 8px;border-radius:99px}
+  .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px}
+  .sync-box{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-md);padding:12px;font-size:12px;color:var(--muted)}
+  .sync-box .row{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex-shrink:0}
+  .dot.ok{background:var(--accent)}
+
+  /* topbar móvil */
+  header.mtop{display:none}
+  @media(max-width:1023px){
+    aside.side{display:none}
+    main.main{margin-left:0;padding:16px 16px 90px}
+    header.mtop{display:block;position:sticky;top:0;background:#0a0a0fee;backdrop-filter:blur(10px);z-index:20;border-bottom:1px solid var(--border);margin:-16px -16px 18px;padding:14px 16px 0}
+    .mtop .brand{padding-bottom:12px}
+    .mnav{display:flex;gap:4px;overflow-x:auto;padding-bottom:10px;scrollbar-width:none}
+    .mnav::-webkit-scrollbar{display:none}
+    .mnav .nav-btn{width:auto;white-space:nowrap;padding:9px 13px;font-size:13px}
+  }
+
+  /* ============ Componentes base ============ */
+  .btn{border:0;border-radius:12px;padding:11px 17px;font-size:13.5px;font-weight:700;display:inline-flex;align-items:center;gap:8px;transition:.15s;line-height:1}
+  .btn-primary{background:var(--grad);color:#0a0a0f}
+  .btn-primary:hover{filter:brightness(1.12)}
+  .btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+  .btn-ghost:hover{border-color:var(--border2)}
+  .btn-danger{background:transparent;color:var(--danger);border:1px solid #ff5c7a3d}
+  .btn-danger:hover{background:#ff5c7a14}
+  .btn-sm{padding:8px 12px;font-size:12.5px;border-radius:9px}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .iconbtn{background:var(--surface2);border:1px solid var(--border);color:var(--muted);width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;transition:.15s}
+  .iconbtn:hover{color:var(--text);border-color:var(--border2)}
+
+  .view{display:none}
+  .view.active{display:block;animation:fade .18s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+  .page-head h2{font-family:var(--display);font-size:22px;letter-spacing:-.4px}
+  .page-head p{color:var(--muted);font-size:13.5px;margin-top:4px;max-width:560px}
+  .head-actions{display:flex;gap:9px;flex-wrap:wrap}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:20px}
+  .card h3{font-family:var(--display);font-size:14.5px;margin-bottom:14px;display:flex;align-items:center;gap:8px;color:var(--text)}
+  .card h3 svg.ic{color:var(--primary-text);width:16px;height:16px}
+
+  .chip{font-size:11px;font-weight:700;padding:4px 10px;border-radius:99px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+  .chip.ig{color:var(--ig);border-color:#e879ba36}
+  .chip.fb{color:var(--fb);border-color:#6da9ff36}
+  .chip.ia{color:var(--accent);border-color:#22e6a536}
+  .chip.cl{color:var(--warn);border-color:#ffb45436}
+  .badge{font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:99px;letter-spacing:.3px}
+  .badge.dm{background:var(--accent-soft);color:var(--accent)}
+  .badge.ig{background:#e879ba1a;color:var(--ig)}
+  .badge.fb{background:#6da9ff1a;color:var(--fb)}
+
+  input[type=text],input[type=url],input[type=search],select,textarea{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:11px;color:var(--text);font-family:var(--font);font-size:14px;padding:11px 13px;outline:0;transition:border-color .15s}
+  input:focus,select:focus,textarea:focus{border-color:var(--primary)}
+  textarea{resize:vertical;min-height:74px;line-height:1.55}
+  select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239c9cb0' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:36px}
+
+  /* ============ Dashboard ============ */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:18px 20px;position:relative;overflow:hidden}
+  .kpi::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad);opacity:.7}
+  .kpi b{font-family:var(--mono);font-size:28px;font-weight:700;display:block;letter-spacing:-1px;font-variant-numeric:tabular-nums}
+  .kpi span{color:var(--muted);font-size:12px;font-weight:600}
+  .kpi .delta{font-size:11px;color:var(--accent);font-weight:700;margin-left:6px}
+  .dash-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:14px}
+  @media(max-width:900px){.dash-grid{grid-template-columns:1fr}}
+  .barchart{display:flex;align-items:flex-end;gap:5px;height:150px;padding-top:8px}
+  .barchart .bar{flex:1;background:var(--primary-soft);border:1px solid #7c5cff3d;border-radius:6px 6px 3px 3px;position:relative;min-height:3px;transition:.15s;cursor:default}
+  .barchart .bar:hover{background:#7c5cff45}
+  .barchart .bar b{position:absolute;top:-19px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:10px;color:var(--muted);font-weight:500}
+  .bar-labels{display:flex;gap:5px;margin-top:8px}
+  .bar-labels span{flex:1;text-align:center;font-size:9.5px;color:var(--muted2);font-family:var(--mono);overflow:hidden;white-space:nowrap}
+  .donut-wrap{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+  .legend{display:flex;flex-direction:column;gap:9px;font-size:12.5px;color:var(--muted)}
+  .legend .li{display:flex;align-items:center;gap:8px}
+  .legend .sw{width:10px;height:10px;border-radius:3px}
+  .legend b{color:var(--text);font-family:var(--mono);margin-left:auto;padding-left:14px}
+  .rank{display:flex;flex-direction:column;gap:11px}
+  .rank .ri{font-size:12.5px}
+  .rank .ri .top{display:flex;justify-content:space-between;margin-bottom:5px}
+  .rank .ri .top b{font-family:var(--mono);color:var(--primary-text)}
+  .rank .ri .track{height:7px;background:var(--surface2);border-radius:99px;overflow:hidden}
+  .rank .ri .fill{height:100%;background:var(--grad);border-radius:99px}
+  .mini-empty{color:var(--muted2);font-size:12.5px;text-align:center;padding:26px 10px;line-height:1.6}
+
+  /* ============ Automatizaciones ============ */
+  .toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+  .toolbar .search{position:relative;flex:1;min-width:180px}
+  .toolbar .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted2);width:15px;height:15px}
+  .toolbar .search input{padding-left:36px}
+  .toolbar select{width:auto;min-width:150px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+  .auto-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:19px;position:relative;transition:border-color .15s}
+  .auto-card:hover{border-color:var(--border2)}
+  .auto-card.inactiva{opacity:.5}
+  .auto-card h3{font-family:var(--display);font-size:15.5px;margin-bottom:3px;padding-right:56px}
+  .auto-card .plats{display:flex;gap:6px;margin:9px 0 11px;flex-wrap:wrap}
+  .kw{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+  .kw span{background:var(--primary-soft);color:var(--primary-text);border:1px solid #7c5cff40;padding:4px 11px;border-radius:99px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+  .auto-card .detail{font-size:12.5px;color:var(--muted);line-height:1.55;margin-bottom:3px}
+  .auto-card .detail b{color:var(--text);font-weight:600}
+  .auto-card .foot{display:flex;gap:8px;margin-top:14px;align-items:center}
+  .auto-card .leadcnt{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--accent);display:flex;align-items:center;gap:5px}
+  .switch{position:relative;width:42px;height:23px;flex-shrink:0;display:inline-block}
+  .switch input{position:absolute;opacity:0;width:100%;height:100%;cursor:pointer;z-index:1;margin:0}
+  .switch i{position:absolute;inset:0;background:var(--border);border-radius:99px;transition:.2s;pointer-events:none}
+  .switch i::before{content:'';position:absolute;top:3px;left:3px;width:17px;height:17px;background:#fff;border-radius:50%;transition:.2s}
+  .switch input:checked~i{background:var(--accent)}
+  .switch input:checked~i::before{left:22px}
+  .switch-abs{position:absolute;top:17px;right:17px}
+  .tester{margin-bottom:16px}
+  .tester .trow{display:flex;gap:10px;flex-wrap:wrap}
+  .tester .trow input{flex:1;min-width:200px}
+  .tester .result{margin-top:13px;font-size:13px;line-height:1.7;color:var(--muted);border-top:1px dashed var(--border);padding-top:13px;display:none}
+  .tester .result b{color:var(--text)}
+  .tester .result .msg{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 13px;margin-top:6px;white-space:pre-wrap;color:var(--text);font-size:12.5px}
+
+  /* ============ Plantillas ============ */
+  .tpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .tpl{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:20px;display:flex;flex-direction:column;gap:10px;transition:border-color .15s}
+  .tpl:hover{border-color:var(--border2)}
+  .tpl .tico{width:40px;height:40px;border-radius:11px;background:var(--primary-soft);color:var(--primary-text);display:flex;align-items:center;justify-content:center}
+  .tpl h3{font-family:var(--display);font-size:15px}
+  .tpl .tag{font-size:10.5px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.8px}
+  .tpl p{font-size:12.5px;color:var(--muted);line-height:1.6;flex:1}
+  .tpl .tkw{font-family:var(--mono);font-size:11px;color:var(--primary-text)}
+
+  /* ============ Leads ============ */
+  .table-wrap{border:1px solid var(--border);border-radius:var(--r-lg);overflow:auto;background:var(--surface)}
+  table{width:100%;border-collapse:collapse;min-width:760px}
+  thead th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted2);padding:12px 15px;border-bottom:1px solid var(--border);background:var(--surface2);font-weight:700}
+  tbody td{padding:12px 15px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:top}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#ffffff05}
+  td.mono{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .skel td div{height:13px;border-radius:6px;background:linear-gradient(90deg,var(--surface2) 25%,var(--surface3) 50%,var(--surface2) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite}
+  @keyframes shimmer{to{background-position:-200% 0}}
+
+  /* ============ CTA Studio ============ */
+  .cta-grid{display:grid;grid-template-columns:340px 1fr;gap:14px}
+  @media(max-width:900px){.cta-grid{grid-template-columns:1fr}}
+  .cta-out{display:flex;flex-direction:column;gap:12px}
+  .cta-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:16px 18px}
+  .cta-item .lbl{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.9px;color:var(--accent);margin-bottom:7px;display:flex;align-items:center;justify-content:space-between}
+  .cta-item p{font-size:13.5px;line-height:1.65;white-space:pre-wrap}
+
+  /* ============ Conexiones ============ */
+  .conns{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+  .conn{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:20px}
+  .conn .head{display:flex;align-items:center;gap:11px;margin-bottom:11px}
+  .conn .cico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:var(--surface2);border:1px solid var(--border)}
+  .conn h3{font-family:var(--display);font-size:14.5px}
+  .estado{font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:99px;margin-left:auto;white-space:nowrap}
+  .estado.listo{background:var(--accent-soft);color:var(--accent)}
+  .estado.pend{background:#ffb4541a;color:var(--warn)}
+  .estado.parcial{background:#6da9ff1a;color:var(--info)}
+  .estado.no{background:#ff5c7a1a;color:var(--danger)}
+  .conn p{font-size:12.5px;color:var(--muted);line-height:1.65}
+  .conn p b{color:var(--text)}
+
+  /* ============ Instalación ============ */
+  .progress-card{margin-bottom:16px}
+  .ptrack{height:9px;background:var(--surface2);border-radius:99px;overflow:hidden;margin:10px 0 6px}
+  .pfill{height:100%;background:var(--grad);border-radius:99px;transition:width .3s}
+  .plabel{font-size:12px;color:var(--muted);font-family:var(--mono)}
+  .paso{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:19px 21px;margin-bottom:12px;display:flex;gap:16px;align-items:flex-start}
+  .paso.done{border-color:#22e6a540}
+  .paso .pcheck{margin-top:2px}
+  .pcheck{width:24px;height:24px;border-radius:8px;border:1.5px solid var(--border2);background:var(--surface2);display:flex;align-items:center;justify-content:center;color:transparent;flex-shrink:0;transition:.15s;padding:0}
+  .paso.done .pcheck{background:var(--accent);border-color:var(--accent);color:#0a0a0f}
+  .paso h3{font-family:var(--display);font-size:14.5px;margin-bottom:7px}
+  .paso.done h3{text-decoration:line-through;color:var(--muted)}
+  .paso p,.paso li{font-size:13px;color:var(--muted);line-height:1.7}
+  .paso ul{padding-left:17px;margin-top:5px}
+  .paso b{color:var(--text)}
+  .paso a{color:var(--primary-text);text-decoration:none}
+  .paso a:hover{text-decoration:underline}
+  .copyline{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin:8px 0;font-family:var(--mono);font-size:11.5px;color:var(--accent);word-break:break-all}
+  .copyline button{margin-left:auto}
+
+  /* ============ Modal ============ */
+  .modal-bg{position:fixed;inset:0;background:#000000b3;backdrop-filter:blur(5px);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:38px 16px;overflow-y:auto}
+  .modal-bg.open{display:flex}
+  .modal{background:var(--surface);border:1px solid var(--border2);border-radius:20px;width:100%;max-width:620px;padding:26px;box-shadow:var(--shadow);animation:pop .18s ease}
+  @keyframes pop{from{opacity:0;transform:scale(.97) translateY(8px)}to{opacity:1;transform:none}}
+  .modal h2{font-family:var(--display);font-size:19px;margin-bottom:20px}
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:7px}
+  .field label b{color:var(--text)}
+  .field .hint{font-size:11.5px;color:var(--muted2);margin-top:6px;line-height:1.55}
+  .field .hint code{color:var(--primary-text);background:var(--primary-soft);padding:1px 6px;border-radius:5px;font-size:11px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  @media(max-width:600px){.row2{grid-template-columns:1fr}}
+  .plat-select{display:flex;gap:9px}
+  .plat-select label{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--surface2);border:1.5px solid var(--border);border-radius:11px;padding:11px;cursor:pointer;font-size:13.5px;color:var(--muted);font-weight:700;margin:0;transition:.15s}
+  .plat-select label.on{border-color:var(--primary);color:var(--text);background:var(--primary-soft)}
+  .plat-select input{position:absolute;opacity:0}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--surface2);border:1px solid var(--border);border-radius:11px;padding:12px 15px}
+  .toggle-row .t-label{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .toggle-row .t-sub{font-size:11.5px;color:var(--muted2);margin-top:2px}
+  .modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:22px}
+
+  .empty{border:1.5px dashed var(--border2);border-radius:var(--r-lg);padding:52px 24px;text-align:center;color:var(--muted)}
+  .empty .eico{width:52px;height:52px;border-radius:14px;background:var(--surface2);display:inline-flex;align-items:center;justify-content:center;color:var(--primary-text);margin-bottom:14px}
+  .empty h3{font-family:var(--display);color:var(--text);margin-bottom:7px;font-size:16px}
+  .empty p{font-size:13.5px;max-width:430px;margin:0 auto 18px;line-height:1.65}
+
+  #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(90px);background:var(--surface3);border:1px solid var(--border2);border-radius:12px;padding:13px 21px;font-size:13.5px;font-weight:600;z-index:99;transition:.25s;opacity:0;display:flex;align-items:center;gap:9px;max-width:92vw;box-shadow:var(--shadow)}
+  #toast.show{transform:translateX(-50%);opacity:1}
+  #toast.exito{border-color:#22e6a566;color:var(--accent)}
+  #toast.error{border-color:#ff5c7a66;color:var(--danger)}
+</style>
+</head>
+<body>
+<!-- ============ Sprite SVG ============ -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 6-10 6L2 8l10-6z"/><path d="m2 14 10 6 10-6"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-mega" viewBox="0 0 24 24"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+  <symbol id="i-rocket" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 10.5l-6.1 1.7L12 18l-1.9-5.8L4 10.5l6.1-1.7L12 3z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M12 12v9"/><path d="m8 16 4-4 4 4"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17v-6"/><path d="M13 17V7"/><path d="M18 17v-3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m6 4 14 8-14 8V4z"/></symbol>
+  <symbol id="i-ig" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4.5"/><circle cx="17.5" cy="6.5" r=".8"/></symbol>
+  <symbol id="i-fb" viewBox="0 0 24 24"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3V2z"/></symbol>
+  <symbol id="i-wa" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22l5.9-2z"/><path d="M9 10a.5.5 0 0 0 1 0V9a.5.5 0 0 0-1 0v1a5 5 0 0 0 5 5h1a.5.5 0 0 0 0-1h-1a.5.5 0 0 0 0 1"/></symbol>
+  <symbol id="i-tt" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+  <symbol id="i-yt" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="13" rx="4"/><path d="m10 9.5 5 3-5 3v-6z"/></symbol>
+  <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 4.5a3 3 0 0 0-5.9.6A3.5 3.5 0 0 0 4 11.5a3.5 3.5 0 0 0 .6 6.4A3 3 0 0 0 10.5 20a3 3 0 0 0 1.5-.5"/><path d="M12 4.5a3 3 0 0 1 5.9.6 3.5 3.5 0 0 1 2.1 6.4 3.5 3.5 0 0 1-.6 6.4A3 3 0 0 1 13.5 20a3 3 0 0 1-1.5-.5"/><path d="M12 4.5v15"/></symbol>
+  <symbol id="i-gift" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M12 2H2v10l9.3 9.3a1.7 1.7 0 0 0 2.4 0l7.6-7.6a1.7 1.7 0 0 0 0-2.4L12 2z"/><circle cx="7" cy="7" r="1.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.2 3.9A2 2 0 0 0 7.5 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></symbol>
+</svg>
+
+<div class="shell">
+  <!-- ============ Sidebar (desktop) ============ -->
+  <aside class="side">
+    <div class="brand">
+      <div class="mark">L</div>
+      <div><h1>Lapora<em>Chat</em></h1><small>TU MANYCHAT PROPIO</small></div>
+    </div>
+    <nav id="navDesk" aria-label="Navegación principal"></nav>
+    <div class="side-foot">
+      <div class="sync-box">
+        <div class="row"><span class="dot" data-syncdot></span><span data-synctxt>Sin sincronizar</span></div>
+        <button class="btn btn-primary btn-sm" style="width:100%;justify-content:center" onclick="sincronizar()" data-syncbtn>
+          <svg class="ic" style="width:14px;height:14px"><use href="#i-cloud"/></svg> Sincronizar
+        </button>
+      </div>
+      <button class="btn btn-ghost btn-sm" style="justify-content:center" onclick="abrirAjustes()">
+        <svg class="ic" style="width:14px;height:14px"><use href="#i-sliders"/></svg> Ajustes
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- topbar móvil -->
+    <header class="mtop">
+      <div class="brand">
+        <div class="mark">L</div>
+        <div><h1>Lapora<em>Chat</em></h1><small>TU MANYCHAT PROPIO</small></div>
+        <button class="iconbtn" style="margin-left:auto" onclick="sincronizar()" aria-label="Sincronizar con n8n"><svg class="ic"><use href="#i-cloud"/></svg></button>
+        <button class="iconbtn" onclick="abrirAjustes()" aria-label="Ajustes"><svg class="ic"><use href="#i-sliders"/></svg></button>
+      </div>
+      <nav class="mnav" id="navMov" aria-label="Navegación"></nav>
+    </header>
+
+    <!-- ============ DASHBOARD ============ -->
+    <section class="view" id="view-dashboard">
+      <div class="page-head">
+        <div><h2>Dashboard</h2><p>El pulso de tus automatizaciones: cada comentario con palabra clave es alcance para el video y un lead para el negocio.</p></div>
+        <div class="head-actions"><button class="btn btn-ghost btn-sm" onclick="cargarLeads(true)"><svg class="ic" style="width:14px;height:14px"><use href="#i-refresh"/></svg> Actualizar datos</button></div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><b id="kLeads">0</b><span>Leads capturados</span></div>
+        <div class="kpi"><b id="kLeads7">0</b><span>Últimos 7 días</span></div>
+        <div class="kpi"><b id="kAutos">0</b><span>Automatizaciones activas</span></div>
+        <div class="kpi"><b id="kKw">0</b><span>Palabras clave vigiladas</span></div>
+      </div>
+      <div class="dash-grid">
+        <div class="card">
+          <h3><svg class="ic"><use href="#i-chart"/></svg> Leads por día — últimos 14 días</h3>
+          <div id="chartBars"></div>
+        </div>
+        <div class="card">
+          <h3><svg class="ic"><use href="#i-grid"/></svg> Por red social</h3>
+          <div id="chartDonut"></div>
+        </div>
+        <div class="card">
+          <h3><svg class="ic"><use href="#i-tag"/></svg> Palabras clave que más convierten</h3>
+          <div id="rankKw" class="rank"></div>
+        </div>
+        <div class="card">
+          <h3><svg class="ic"><use href="#i-folder"/></svg> Leads por cliente / proyecto</h3>
+          <div id="rankCli" class="rank"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ AUTOMATIZACIONES ============ -->
+    <section class="view" id="view-autos">
+      <div class="page-head">
+        <div><h2>Automatizaciones</h2><p>La palabra clave que dices al final del video. Quien la comente recibe respuesta pública + DM con tu link, y queda como lead.</p></div>
+        <div class="head-actions"><button class="btn btn-primary" onclick="abrirModal()"><svg class="ic" style="width:15px;height:15px"><use href="#i-plus"/></svg> Nueva automatización</button></div>
+      </div>
+      <div class="card tester">
+        <h3><svg class="ic"><use href="#i-play"/></svg> Probador — simula un comentario</h3>
+        <div class="trow">
+          <input type="text" id="testInput" placeholder='Escribe un comentario de prueba, ej: "quiero la GUÍA porfa"' aria-label="Comentario de prueba">
+          <button class="btn btn-ghost" onclick="probarComentario()">Probar</button>
+        </div>
+        <div class="result" id="testResult" aria-live="polite"></div>
+      </div>
+      <div class="toolbar">
+        <div class="search"><svg class="ic"><use href="#i-search"/></svg><input type="search" id="buscaAuto" placeholder="Buscar automatización o palabra clave…" oninput="render()" aria-label="Buscar automatización"></div>
+        <select id="filtroCliente" onchange="render()" aria-label="Filtrar por cliente"></select>
+      </div>
+      <div id="listaAutos" class="grid"></div>
+      <div id="emptyAutos" class="empty" style="display:none">
+        <div class="eico"><svg class="ic" style="width:24px;height:24px"><use href="#i-bolt"/></svg></div>
+        <h3>Crea tu primera automatización</h3>
+        <p>O arranca más rápido con una <b>plantilla de crecimiento</b>: lead magnet, cotización, sorteo, diagnóstico gratis…</p>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="abrirModal()"><svg class="ic" style="width:15px;height:15px"><use href="#i-plus"/></svg> Crear desde cero</button>
+          <button class="btn btn-ghost" onclick="irA('plantillas')"><svg class="ic" style="width:15px;height:15px"><use href="#i-layers"/></svg> Ver plantillas</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PLANTILLAS ============ -->
+    <section class="view" id="view-plantillas">
+      <div class="page-head">
+        <div><h2>Plantillas de crecimiento</h2><p>Estrategias probadas del playbook de Lapora, listas en un clic. Cada una trae palabras clave, respuestas rotativas y prompt de IA afinado.</p></div>
+      </div>
+      <div class="tpl-grid" id="listaTpl"></div>
+    </section>
+
+    <!-- ============ LEADS ============ -->
+    <section class="view" id="view-leads">
+      <div class="page-head">
+        <div><h2>Leads capturados</h2><p>Tu CRM básico: cada persona que comentó una palabra clave y recibió el DM. Exporta a CSV para campañas de seguimiento.</p></div>
+        <div class="head-actions">
+          <button class="btn btn-ghost btn-sm" onclick="exportarCSV()"><svg class="ic" style="width:14px;height:14px"><use href="#i-down"/></svg> Exportar CSV</button>
+          <button class="btn btn-ghost btn-sm" onclick="cargarLeads(true)"><svg class="ic" style="width:14px;height:14px"><use href="#i-refresh"/></svg> Actualizar</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="search"><svg class="ic"><use href="#i-search"/></svg><input type="search" id="buscaLead" placeholder="Buscar usuario, comentario, cliente…" oninput="renderLeads()" aria-label="Buscar lead"></div>
+        <select id="filtroRed" onchange="renderLeads()" aria-label="Filtrar por red">
+          <option value="">Todas las redes</option>
+          <option value="instagram">Instagram</option>
+          <option value="facebook">Facebook</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Red</th><th>Usuario</th><th>Comentario</th><th>Palabra</th><th>Automatización</th><th>Cliente</th><th>Estado</th></tr></thead>
+          <tbody id="tbodyLeads"></tbody>
+        </table>
+      </div>
+      <div id="emptyLeads" class="empty" style="display:none;margin-top:14px">
+        <div class="eico"><svg class="ic" style="width:24px;height:24px"><use href="#i-inbox"/></svg></div>
+        <h3>Aún no hay leads</h3>
+        <p>Cuando el motor esté conectado a Meta y alguien comente tu palabra clave, cada persona capturada aparecerá aquí con su comentario y el DM enviado.</p>
+        <button class="btn btn-ghost" onclick="irA('instalacion')"><svg class="ic" style="width:14px;height:14px"><use href="#i-rocket"/></svg> Completar instalación</button>
+      </div>
+    </section>
+
+    <!-- ============ CTA STUDIO ============ -->
+    <section class="view" id="view-cta">
+      <div class="page-head">
+        <div><h2>CTA Studio</h2><p>Genera los cierres de video, caption y comentario fijado para tu palabra clave — en voz colombiana, directa y sin tibieza.</p></div>
+      </div>
+      <div class="cta-grid">
+        <div class="card">
+          <h3><svg class="ic"><use href="#i-mega"/></svg> Configura tu CTA</h3>
+          <div class="field">
+            <label><b>Palabra clave</b></label>
+            <input type="text" id="ctaKw" placeholder="GUÍA" list="listaKws">
+            <datalist id="listaKws"></datalist>
+          </div>
+          <div class="field">
+            <label><b>¿Qué recibe la persona?</b></label>
+            <input type="text" id="ctaOferta" placeholder="la guía para cobrar más como fotógrafo">
+          </div>
+          <div class="field">
+            <label><b>Plataforma del video</b></label>
+            <select id="ctaPlat">
+              <option value="instagram">Instagram (Reel)</option>
+              <option value="tiktok">TikTok (dirigir a IG)</option>
+              <option value="facebook">Facebook</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="generarCTA()"><svg class="ic" style="width:15px;height:15px"><use href="#i-spark"/></svg> Generar CTAs</button>
+        </div>
+        <div class="cta-out" id="ctaOut">
+          <div class="empty" style="padding:38px 20px">
+            <div class="eico"><svg class="ic" style="width:22px;height:22px"><use href="#i-mega"/></svg></div>
+            <h3>Tus guiones aparecerán aquí</h3>
+            <p>Escribe la palabra clave y lo que entregas, y te doy 3 cierres de video + caption + comentario fijado listos para copiar.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ KIT DE VENTA ============ -->
+    <section class="view" id="view-kit">
+      <div class="page-head">
+        <div><h2>Kit de venta — LaporaChat como servicio</h2><p>Todo para ofrecer, vender e instalar este mismo sistema a tus clientes. Documentos completos en <code style="color:var(--primary-text)">herramientas/laporachat/plantilla-clientes/</code></p></div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3><svg class="ic"><use href="#i-mega"/></svg> El pitch de una frase</h3>
+        <p style="font-size:14.5px;line-height:1.7;color:var(--text)">"Cada video tuyo se vuelve una máquina de captar clientes: la gente comenta una palabra, y mi sistema les responde, les manda lo que pidieron al DM, les conversa con IA, les agenda la cita con anticipo pago y te los deja organizados en un CRM — 24/7, mientras tú creas contenido."</p>
+        <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="copiar(this.previousElementSibling.textContent,'Pitch copiado')">Copiar pitch</button>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3><svg class="ic"><use href="#i-tag"/></svg> Planes sugeridos (COP)</h3>
+        <div class="table-wrap" style="border:0">
+        <table style="min-width:600px">
+          <thead><tr><th></th><th>Arranque</th><th>Crecimiento ⭐</th><th>Pro</th></tr></thead>
+          <tbody>
+            <tr><td><b>Setup único</b></td><td>$350.000</td><td>$350.000</td><td>$500.000</td></tr>
+            <tr><td><b>Mensualidad</b></td><td>$250.000</td><td>$450.000</td><td>$800.000</td></tr>
+            <tr><td>Palabras clave</td><td>3</td><td>Ilimitadas</td><td>Ilimitadas</td></tr>
+            <tr><td>IA conversacional 24/7</td><td>—</td><td>✔</td><td>✔</td></tr>
+            <tr><td>Citas + anticipo Nequi</td><td>—</td><td>✔</td><td>✔</td></tr>
+            <tr><td>CRM con conversaciones</td><td>—</td><td>✔</td><td>✔</td></tr>
+            <tr><td>Llamada IA de confirmación</td><td>—</td><td>—</td><td>✔</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="hint" style="margin-top:8px;font-size:12px;color:var(--muted2)">Anclas: ManyChat Pro solo-herramienta ≈ $65-260k/mes · community manager $1.2M+/mes · recepcionista $1.4M+/mes. Costo marginal por cliente ≈ $0.</div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3><svg class="ic"><use href="#i-play"/></svg> Demo en vivo (10 min) — el guion</h3>
+        <div class="rank">
+          <div class="ri"><div class="top"><span><b>1. El dolor</b> — "¿Cuántos DMs se te quedan sin responder? ¿Cuántas citas no llegan?"</span></div></div>
+          <div class="ri"><div class="top"><span><b>2. El comentario mágico</b> — comenta "GUIA" en vivo → respuesta pública + DM personalizado en segundos</span></div></div>
+          <div class="ri"><div class="top"><span><b>3. La IA agenda</b> — "¿tienes el lunes a las 3?" → consulta el calendario real → cita con anticipo de $20.000 al Nequi</span></div></div>
+          <div class="ri"><div class="top"><span><b>4. El CRM</b> — el contacto aparece con su conversación completa</span></div></div>
+          <div class="ri"><div class="top"><span><b>5. Cierre</b> — "Esto, con tu marca y tu Nequi, te lo entrego andando en una semana: $350k de montaje + $450k/mes. ¿Arrancamos con tu próximo video?"</span></div></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3><svg class="ic"><use href="#i-check"/></svg> Onboarding del cliente (lo que le pides)</h3>
+        <div class="rank">
+          <div class="ri"><div class="top"><span>Instagram <b>profesional</b> + 3 autorizaciones guiadas (invitación, conexión, token) — 10 min, sin contraseñas</span></div></div>
+          <div class="ri"><div class="top"><span>Horario de citas, servicios, precios que la IA puede decir, Nequi del anticipo</span></div></div>
+          <div class="ri"><div class="top"><span>Links de recursos (guía, portafolio, agenda) + primeras 3 palabras clave</span></div></div>
+          <div class="ri"><div class="top"><span>Tono de marca en 3 palabras + compromiso: decir el CTA en cada video</span></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3><svg class="ic"><use href="#i-rocket"/></svg> Instalación por cliente (resumen del playbook — 2-3 horas)</h3>
+        <div class="rank">
+          <div class="ri"><div class="top"><span><b>Meta:</b> invitar su cuenta como Evaluador de Instagram → él acepta → conectar cuenta → generar token → activar suscripción webhook</span></div></div>
+          <div class="ri"><div class="top"><span><b>n8n:</b> credencial Query Auth con su token · automatizaciones con campo cliente · su Google Calendar · su horario/Nequi en el prompt</span></div></div>
+          <div class="ri"><div class="top"><span><b>CRM:</b> clínica del cliente + API key (lectura+escritura) + credencial Header Auth en n8n</span></div></div>
+          <div class="ri"><div class="top"><span><b>Pruebas:</b> comentario → respuesta+DM · anti-duplicados · cita en calendario+CRM · follow gate</span></div></div>
+        </div>
+        <div class="hint" style="margin-top:10px;font-size:12px;color:var(--muted2)">⚠ Trampas conocidas y detalles completos: PLAYBOOK-INSTALACION.md en plantilla-clientes/. Sin App Review de Meta, solo cuentas con rol de evaluador disparan eventos (máx. 50 — suficiente para los primeros clientes).</div>
+      </div>
+    </section>
+
+    <!-- ============ CONEXIONES ============ -->
+    <section class="view" id="view-conexiones">
+      <div class="page-head">
+        <div><h2>Conexiones</h2><p>Estado real de cada canal. Sin humo: lo que funciona, lo que es parcial y lo que la plataforma no permite.</p></div>
+      </div>
+      <div class="conns">
+        <div class="conn"><div class="head"><div class="cico" style="color:var(--ig)"><svg class="ic"><use href="#i-ig"/></svg></div><h3>Instagram</h3><span class="estado pend">Falta token</span></div>
+          <p><b>Motor listo y publicado en n8n.</b> Comentario con palabra clave → respuesta pública rotativa + DM con link + lead. DMs entrantes los responde Gemini. Solo falta conectar tu app de Meta (pestaña Instalación).</p></div>
+        <div class="conn"><div class="head"><div class="cico" style="color:var(--fb)"><svg class="ic"><use href="#i-fb"/></svg></div><h3>Facebook</h3><span class="estado pend">Falta token</span></div>
+          <p><b>Motor listo.</b> Usa la misma app de Meta que Instagram: comentarios en publicaciones de tu página → respuesta + mensaje privado por Messenger.</p></div>
+        <div class="conn"><div class="head"><div class="cico" style="color:var(--wa)"><svg class="ic"><use href="#i-wa"/></svg></div><h3>WhatsApp</h3><span class="estado listo">Disponible</span></div>
+          <p>Con la <b>Cloud API</b> (la del bot de zapatillas) el link del DM puede llevar directo a un chat de WhatsApp con respuesta IA — el canal que más convierte en Colombia.</p></div>
+        <div class="conn"><div class="head"><div class="cico" style="color:var(--text)"><svg class="ic"><use href="#i-tt"/></svg></div><h3>TikTok</h3><span class="estado no">API cerrada</span></div>
+          <p>TikTok <b>no ofrece API pública</b> para responder comentarios ni DMs (ManyChat la tiene por alianza directa). La jugada que sí funciona: el CTA del video de TikTok manda a comentar la palabra clave <b>en tu Instagram</b> — CTA Studio te genera ese guion.</p></div>
+        <div class="conn"><div class="head"><div class="cico" style="color:var(--yt)"><svg class="ic"><use href="#i-yt"/></svg></div><h3>YouTube</h3><span class="estado parcial">Parcial</span></div>
+          <p>La API de YouTube permite <b>auto-responder comentarios</b> con tu link (integrable con tu ecosistema Google), pero no existen DMs. Se entrega el link en la respuesta pública.</p></div>
+        <div class="conn"><div class="head"><div class="cico" style="color:var(--accent)"><svg class="ic"><use href="#i-brain"/></svg></div><h3>Gemini (Google)</h3><span class="estado listo">Conectado</span></div>
+          <p>Tu credencial de <b>Google Gemini</b> ya está enlazada al motor. Responde DMs con memoria por usuario y saluda por el nombre con la variable <b>{nombre}</b>.</p></div>
+      </div>
+    </section>
+
+    <!-- ============ INSTALACIÓN ============ -->
+    <section class="view" id="view-instalacion">
+      <div class="page-head">
+        <div><h2>Instalación</h2><p>Una sola vez y queda funcionando. Marca cada paso a medida que avanzas.</p></div>
+      </div>
+      <div class="card progress-card">
+        <h3><svg class="ic"><use href="#i-rocket"/></svg> Progreso de instalación</h3>
+        <div class="ptrack"><div class="pfill" id="pfill" style="width:0%"></div></div>
+        <div class="plabel" id="plabel">0 de 6 pasos</div>
+      </div>
+      <div id="pasosWrap"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ============ MODAL AUTOMATIZACIÓN ============ -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitulo">
+    <h2 id="modalTitulo">Nueva automatización</h2>
+    <div class="row2">
+      <div class="field">
+        <label for="fNombre"><b>Nombre</b></label>
+        <input type="text" id="fNombre" placeholder="Guía de precios para fotógrafos">
+      </div>
+      <div class="field">
+        <label for="fCliente"><b>Cliente / proyecto</b> (opcional)</label>
+        <input type="text" id="fCliente" placeholder="Lapora" list="listaClientes">
+        <datalist id="listaClientes"></datalist>
+      </div>
+    </div>
+    <div class="field">
+      <label><b>Plataformas</b></label>
+      <div class="plat-select">
+        <label><input type="checkbox" value="instagram" checked><svg class="ic" style="width:15px;height:15px"><use href="#i-ig"/></svg> Instagram</label>
+        <label><input type="checkbox" value="facebook"><svg class="ic" style="width:15px;height:15px"><use href="#i-fb"/></svg> Facebook</label>
+      </div>
+    </div>
+    <div class="field">
+      <label for="fKeywords"><b>Palabras clave</b> (separadas por coma)</label>
+      <input type="text" id="fKeywords" placeholder="GUÍA, GUIA, quiero la guía">
+      <div class="hint">La que dices al final del video. Agrega variantes con y sin tilde. No importan mayúsculas ni tildes al comparar.</div>
+    </div>
+    <div class="field">
+      <label for="fRespuesta"><b>Respuestas públicas al comentario</b> — una por línea, rotan al azar</label>
+      <textarea id="fRespuesta" rows="3" placeholder="¡Listo {nombre}! Revisa tu DM 🔥&#10;¡Enviado! Mira tus mensajes 📩&#10;Te lo acabo de mandar al DM ✅"></textarea>
+      <div class="hint">Varias respuestas distintas evitan que Meta lo marque como spam y se ve más humano. Usa <code>{nombre}</code> para personalizar.</div>
+    </div>
+    <div class="field">
+      <label for="fDm"><b>Mensaje DM</b></label>
+      <textarea id="fDm" rows="3" placeholder="¡Hola {nombre}! Gracias por comentar 🙌 Aquí está lo que pediste:"></textarea>
+      <div class="hint">También acepta <code>{nombre}</code>. El link se agrega automáticamente al final.</div>
+    </div>
+    <div class="field">
+      <label for="fLink"><b>Link a enviar</b> (opcional)</label>
+      <input type="url" id="fLink" placeholder="https://…">
+      <div class="hint">✨ El DM se personaliza automáticamente con IA según el perfil de quien comenta (nombre, oficio detectado y punto de dolor). El "Mensaje DM" de arriba es la base y el respaldo.</div>
+    </div>
+    <div class="field">
+      <label for="fPostUrl"><b>Post / Reel específico</b> (opcional — estilo ManyChat)</label>
+      <input type="url" id="fPostUrl" placeholder="https://www.instagram.com/reel/ABC123/">
+      <div class="hint">Pega la URL del post y la palabra clave solo disparará en ESE video. Vacío = funciona en todos tus posts. Así puedes usar palabras distintas por video.</div>
+    </div>
+    <div class="field">
+      <div class="toggle-row">
+        <div><div class="t-label">🔒 Requiere seguirte</div><div class="t-sub">Si no te sigue, el DM le pide seguirte y responder "LISTO" — el recurso solo se entrega a seguidores</div></div>
+        <label class="switch"><input type="checkbox" id="fFollow"><i></i></label>
+      </div>
+    </div>
+    <div class="field">
+      <div class="toggle-row">
+        <div><div class="t-label"><svg class="ic" style="width:15px;height:15px;color:var(--accent)"><use href="#i-brain"/></svg> Conversación con IA (Gemini)</div><div class="t-sub">Si la persona responde el DM, Gemini sigue la conversación con memoria</div></div>
+        <label class="switch"><input type="checkbox" id="fIa" checked><i></i></label>
+      </div>
+    </div>
+    <div class="field" id="campoPrompt">
+      <label for="fPrompt"><b>Instrucciones para la IA</b></label>
+      <textarea id="fPrompt" rows="3">Eres el asistente de Lapora Marketing Digital, agencia de marketing para creativos colombianos. Responde corto, cercano y en español colombiano. Si preguntan por servicios o precios, invita a agendar una asesoría gratis.</textarea>
+    </div>
+    <div class="field">
+      <div class="toggle-row">
+        <div><div class="t-label">Automatización activa</div><div class="t-sub">Desactívala sin borrarla cuando termine la campaña</div></div>
+        <label class="switch"><input type="checkbox" id="fActivo" checked><i></i></label>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarAuto()"><svg class="ic" style="width:14px;height:14px"><use href="#i-check"/></svg> Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL AJUSTES ============ -->
+<div class="modal-bg" id="ajustesBg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ajustesTitulo">
+    <h2 id="ajustesTitulo">Ajustes de conexión</h2>
+    <div class="field">
+      <label for="fN8n"><b>URL de tu n8n</b></label>
+      <input type="url" id="fN8n" placeholder="https://mgelvez.app.n8n.cloud">
+      <div class="hint">El panel envía la configuración a <code>/webhook/laporachat-config</code> y lee los leads de <code>/webhook/laporachat-leads</code>.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="cerrarAjustes()">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarAjustes()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ==================== Estado ==================== */
+const K_AUTOS='laporachat_autos', K_CFG='laporachat_cfg';
+let autos = (JSON.parse(localStorage.getItem(K_AUTOS)||'[]')).map(a => Object.assign({cliente:'', postUrl:'', requiereFollow:false}, a));
+let cfg = JSON.parse(localStorage.getItem(K_CFG)||'{}');
+if(!cfg.n8n) cfg.n8n='https://mgelvez.app.n8n.cloud';
+if(!Array.isArray(cfg.checklist)) cfg.checklist=[false,false,false,false,false,false];
+let editandoId=null, leadsCache=[], leadsCargando=true, vistaActual='dashboard';
+
+const VISTAS=[
+  {id:'dashboard', nombre:'Dashboard', icono:'i-grid'},
+  {id:'autos', nombre:'Automatizaciones', icono:'i-bolt', contador:()=>autos.filter(a=>a.activo).length},
+  {id:'plantillas', nombre:'Plantillas', icono:'i-layers'},
+  {id:'leads', nombre:'Leads', icono:'i-inbox', contador:()=>leadsCache.length},
+  {id:'cta', nombre:'CTA Studio', icono:'i-mega'},
+  {id:'kit', nombre:'Kit de venta', icono:'i-tag'},
+  {id:'conexiones', nombre:'Conexiones', icono:'i-link'},
+  {id:'instalacion', nombre:'Instalación', icono:'i-rocket'}
+];
+
+/* ==================== Utilidades ==================== */
+function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+function recorte(s,n){s=s||'';return s.length>n? s.slice(0,n)+'…':s}
+const norm = t => String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+function icono(id,px){return '<svg class="ic" style="width:'+(px||16)+'px;height:'+(px||16)+'px"><use href="#'+id+'"/></svg>'}
+let toastTimer;
+function toast(msg,tipo){
+  const t=document.getElementById('toast');
+  t.innerHTML=(tipo==='exito'?icono('i-check',15):tipo==='error'?icono('i-x',15):'')+esc(msg);
+  t.className='show '+(tipo||'');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>t.className='',3800);
+}
+function copiar(texto,aviso){
+  navigator.clipboard.writeText(texto).then(()=>toast(aviso||'Copiado al portapapeles','exito')).catch(()=>toast('No se pudo copiar','error'));
+}
+
+/* ==================== Navegación ==================== */
+function pintarNav(){
+  const html=VISTAS.map(v=>{
+    const cnt=v.contador? v.contador():0;
+    return '<button class="nav-btn'+(vistaActual===v.id?' active':'')+'" onclick="irA(\''+v.id+'\')">'+icono(v.icono)+v.nombre+(cnt?'<span class="cnt">'+cnt+'</span>':'')+'</button>';
+  }).join('');
+  document.getElementById('navDesk').innerHTML=html;
+  document.getElementById('navMov').innerHTML=html;
+}
+function irA(id){
+  vistaActual=id;
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+id).classList.add('active');
+  pintarNav();
+  if(id==='dashboard') renderDashboard();
+  if(id==='leads') renderLeads();
+}
+
+/* ==================== Persistencia + stats ==================== */
+function persistir(pendiente){
+  if(pendiente!==false) cfg.pendiente=true; else cfg.pendiente=false;
+  localStorage.setItem(K_AUTOS,JSON.stringify(autos));
+  localStorage.setItem(K_CFG,JSON.stringify(cfg));
+  actualizarSync(); pintarNav();
+}
+function actualizarSync(){
+  document.querySelectorAll('[data-syncdot]').forEach(d=>d.className='dot'+(cfg.pendiente?'':' ok'));
+  document.querySelectorAll('[data-synctxt]').forEach(t=>{
+    t.textContent = cfg.pendiente ? 'Cambios sin sincronizar' : (cfg.ultimaSync? 'Sincronizado '+new Date(cfg.ultimaSync).toLocaleString('es-CO',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : 'Sin sincronizar');
+  });
+}
+
+/* ==================== Dashboard ==================== */
+function renderDashboard(){
+  const activas=autos.filter(a=>a.activo!==false);
+  document.getElementById('kLeads').textContent=leadsCache.length;
+  document.getElementById('kAutos').textContent=activas.length;
+  document.getElementById('kKw').textContent=activas.reduce((t,a)=>t+(a.palabrasClave||[]).length,0);
+  const hace7=Date.now()-7*864e5;
+  document.getElementById('kLeads7').textContent=leadsCache.filter(l=>l.fecha&&new Date(l.fecha).getTime()>hace7).length;
+
+  /* barras 14 días */
+  const dias=[];
+  for(let i=13;i>=0;i--){const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-i);dias.push(d)}
+  const cuentas=dias.map(d=>leadsCache.filter(l=>{if(!l.fecha)return false;const f=new Date(l.fecha);return f.getFullYear()===d.getFullYear()&&f.getMonth()===d.getMonth()&&f.getDate()===d.getDate()}).length);
+  const max=Math.max(...cuentas,1);
+  const wrap=document.getElementById('chartBars');
+  if(cuentas.every(c=>c===0)){
+    wrap.innerHTML='<div class="mini-empty">Sin datos aún — cuando lleguen leads verás la tendencia diaria aquí.</div>';
+  }else{
+    wrap.innerHTML='<div class="barchart" role="img" aria-label="Leads por día, últimos 14 días">'
+      +cuentas.map((c,i)=>'<div class="bar" style="height:'+Math.max(3,Math.round(c/max*100))+'%" title="'+dias[i].toLocaleDateString('es-CO',{day:'2-digit',month:'short'})+': '+c+' leads">'+(c?'<b>'+c+'</b>':'')+'</div>').join('')
+      +'</div><div class="bar-labels">'+dias.map((d,i)=>'<span>'+(i%2===0?d.getDate():'')+'</span>').join('')+'</div>';
+  }
+
+  /* donut por red */
+  const porRed={};
+  leadsCache.forEach(l=>{const r=l.plataforma||'otro';porRed[r]=(porRed[r]||0)+1});
+  const colores={instagram:'#e879ba',facebook:'#6da9ff',otro:'#9c9cb0'};
+  const dwrap=document.getElementById('chartDonut');
+  const entradas=Object.entries(porRed);
+  if(!entradas.length){ dwrap.innerHTML='<div class="mini-empty">Sin datos aún.</div>'; }
+  else{
+    const total=leadsCache.length; let offset=0;
+    const segs=entradas.map(([red,n])=>{
+      const frac=n/total, largo=frac*264, seg='<circle cx="50" cy="50" r="42" fill="none" stroke="'+(colores[red]||'#9c9cb0')+'" stroke-width="13" stroke-dasharray="'+largo+' 264" stroke-dashoffset="'+(-offset)+'" transform="rotate(-90 50 50)"/>';
+      offset+=largo; return seg;
+    }).join('');
+    dwrap.innerHTML='<div class="donut-wrap"><svg viewBox="0 0 100 100" width="130" height="130" role="img" aria-label="Distribución de leads por red social">'+segs
+      +'<text x="50" y="47" text-anchor="middle" fill="#f4f4f8" font-size="19" font-weight="700" font-family="JetBrains Mono">'+total+'</text><text x="50" y="61" text-anchor="middle" fill="#9c9cb0" font-size="7.5">leads</text></svg>'
+      +'<div class="legend">'+entradas.map(([red,n])=>'<div class="li"><span class="sw" style="background:'+(colores[red]||'#9c9cb0')+'"></span>'+esc(red)+'<b>'+n+'</b></div>').join('')+'</div></div>';
+  }
+
+  /* rankings */
+  pintarRanking('rankKw','palabra_clave','Comparte tus videos con el CTA y aquí verás qué palabra convierte más.');
+  pintarRanking('rankCli','cliente','Asigna un cliente a cada automatización para ver el desempeño por proyecto.');
+}
+function pintarRanking(elId,campo,vacioMsg){
+  const conteo={};
+  leadsCache.forEach(l=>{const k=(l[campo]||'').trim();if(k)conteo[k]=(conteo[k]||0)+1});
+  const top=Object.entries(conteo).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const el=document.getElementById(elId);
+  if(!top.length){el.innerHTML='<div class="mini-empty">'+esc(vacioMsg)+'</div>';return}
+  const max=top[0][1];
+  el.innerHTML=top.map(([k,n])=>'<div class="ri"><div class="top"><span>'+esc(k)+'</span><b>'+n+'</b></div><div class="track"><div class="fill" style="width:'+Math.round(n/max*100)+'%"></div></div></div>').join('');
+}
+
+/* ==================== Automatizaciones ==================== */
+function leadsDe(auto){return leadsCache.filter(l=>(l.automatizacion||'')===auto.nombre).length}
+function render(){
+  const q=norm(document.getElementById('buscaAuto').value);
+  const fc=document.getElementById('filtroCliente').value;
+  const cont=document.getElementById('listaAutos');
+  const lista=autos.filter(a=>{
+    if(fc && (a.cliente||'')!==fc) return false;
+    if(!q) return true;
+    return norm(a.nombre).includes(q)||(a.palabrasClave||[]).some(k=>norm(k).includes(q))||norm(a.cliente).includes(q);
+  });
+  document.getElementById('emptyAutos').style.display = autos.length? 'none':'block';
+  cont.innerHTML=lista.map(a=>{
+    const nLeads=leadsDe(a);
+    return '<div class="auto-card'+(a.activo?'':' inactiva')+'">'
+      +'<label class="switch switch-abs"><input type="checkbox" '+(a.activo?'checked':'')+' onchange="toggleActivo(\''+a.id+'\',this.checked)" aria-label="Activar o desactivar"><i></i></label>'
+      +'<h3>'+esc(a.nombre)+'</h3>'
+      +'<div class="plats">'
+      +((a.plataformas||[]).includes('instagram')?'<span class="chip ig">'+icono('i-ig',11)+' Instagram</span>':'')
+      +((a.plataformas||[]).includes('facebook')?'<span class="chip fb">'+icono('i-fb',11)+' Facebook</span>':'')
+      +(a.iaActiva?'<span class="chip ia">'+icono('i-brain',11)+' IA</span>':'')
+      +(a.cliente?'<span class="chip cl">'+icono('i-folder',11)+' '+esc(a.cliente)+'</span>':'')
+      +(a.requiereFollow?'<span class="chip" style="color:var(--warn);border-color:#ffb45440">🔒 Solo seguidores</span>':'')
+      +(a.postUrl?'<span class="chip" style="color:var(--info);border-color:#6da9ff40">'+icono('i-play',11)+' Post específico</span>':'')
+      +'</div>'
+      +'<div class="kw">'+(a.palabrasClave||[]).map(k=>'<span>'+esc(k)+'</span>').join('')+'</div>'
+      +'<div class="detail"><b>Comentario:</b> '+esc(recorte((a.respuestaComentario||'').split(/\r?\n/)[0],64))+((a.respuestaComentario||'').split(/\r?\n/).filter(Boolean).length>1?' <span style="color:var(--accent)">(+'+((a.respuestaComentario||'').split(/\r?\n/).filter(Boolean).length-1)+' rotan)</span>':'')+'</div>'
+      +'<div class="detail"><b>DM:</b> '+esc(recorte(a.mensajeDM,64))+'</div>'
+      +(a.link?'<div class="detail"><b>Link:</b> '+esc(recorte(a.link,46))+'</div>':'')
+      +'<div class="foot">'
+      +'<button class="btn btn-ghost btn-sm" onclick="editarAuto(\''+a.id+'\')">'+icono('i-edit',13)+' Editar</button>'
+      +'<button class="btn btn-danger btn-sm" onclick="borrarAuto(\''+a.id+'\')" aria-label="Eliminar automatización">'+icono('i-trash',13)+'</button>'
+      +'<span class="leadcnt">'+icono('i-users',13)+' '+nLeads+' leads</span>'
+      +'</div></div>';
+  }).join('');
+  pintarFiltroClientes(); pintarNav();
+}
+function pintarFiltroClientes(){
+  const sel=document.getElementById('filtroCliente');
+  const actual=sel.value;
+  const clientes=[...new Set(autos.map(a=>(a.cliente||'').trim()).filter(Boolean))].sort();
+  sel.innerHTML='<option value="">Todos los clientes</option>'+clientes.map(c=>'<option'+(c===actual?' selected':'')+'>'+esc(c)+'</option>').join('');
+  document.getElementById('listaClientes').innerHTML=clientes.map(c=>'<option value="'+esc(c)+'">').join('');
+  document.getElementById('listaKws').innerHTML=[...new Set(autos.flatMap(a=>a.palabrasClave||[]))].map(k=>'<option value="'+esc(k)+'">').join('');
+}
+function toggleActivo(id,val){autos=autos.map(a=>a.id===id?Object.assign({},a,{activo:val}):a);persistir();render()}
+function borrarAuto(id){
+  const a=autos.find(x=>x.id===id);
+  if(!confirm('¿Eliminar "'+(a?a.nombre:'')+'"? Recuerda sincronizar después.'))return;
+  autos=autos.filter(x=>x.id!==id);
+  persistir();render();
+  toast('Eliminada — sincroniza para aplicar en el motor');
+}
+
+/* ---------- Probador ---------- */
+function probarComentario(){
+  const texto=document.getElementById('testInput').value;
+  const res=document.getElementById('testResult');
+  res.style.display='block';
+  if(!texto.trim()){res.innerHTML='Escribe un comentario de prueba primero.';return}
+  const t=norm(texto);
+  const activas=autos.filter(a=>a.activo!==false);
+  const match=activas.find(a=>(a.palabrasClave||[]).map(norm).filter(Boolean).some(k=>t.includes(k)));
+  if(!match){
+    res.innerHTML='<b style="color:var(--warn)">Sin coincidencia.</b> Ninguna automatización activa reconoce ese comentario. El motor no haría nada (correcto para comentarios normales).';
+    return;
+  }
+  const kw=(match.palabrasClave||[]).find(k=>t.includes(norm(k)))||'';
+  const respuestas=(match.respuestaComentario||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const resp=(respuestas[Math.floor(Math.random()*respuestas.length)]||'(sin respuesta pública)').split('{nombre}').join('cliente_x');
+  const dm=((match.mensajeDM||'').split('{nombre}').join('cliente_x')+(match.link?'\n\n'+match.link:'')).trim();
+  res.innerHTML='<b style="color:var(--accent)">✓ Dispara "'+esc(match.nombre)+'"</b> con la palabra <b>'+esc(kw)+'</b>'
+    +'<div class="msg"><b style="color:var(--primary-text)">Respuesta pública'+(respuestas.length>1?' (rota entre '+respuestas.length+')':'')+':</b>\n'+esc(resp)+'</div>'
+    +'<div class="msg"><b style="color:var(--primary-text)">DM privado:</b>\n'+esc(dm)+'</div>'
+    +(match.iaActiva?'<div style="margin-top:8px;color:var(--accent);font-size:12px">+ Si responde el DM, Gemini continúa la conversación.</div>':'');
+}
+
+/* ==================== Modal automatización ==================== */
+function abrirModal(prefill){
+  editandoId=null;
+  document.getElementById('modalTitulo').textContent=prefill?'Nueva desde plantilla':'Nueva automatización';
+  document.getElementById('fNombre').value=prefill?prefill.nombre:'';
+  document.getElementById('fCliente').value=prefill?(prefill.cliente||''):'';
+  document.getElementById('fKeywords').value=prefill?prefill.palabrasClave.join(', '):'';
+  document.getElementById('fRespuesta').value=prefill?prefill.respuestaComentario:'¡Listo {nombre}! Revisa tu DM 🔥\n¡Enviado! Mira tus mensajes 📩\nTe lo acabo de mandar al DM ✅';
+  document.getElementById('fDm').value=prefill?prefill.mensajeDM:'';
+  document.getElementById('fLink').value=prefill?(prefill.link||''):'';
+  document.getElementById('fPostUrl').value=prefill?(prefill.postUrl||''):'';
+  document.getElementById('fFollow').checked=prefill?prefill.requiereFollow===true:false;
+  document.getElementById('fIa').checked=prefill?prefill.iaActiva!==false:true;
+  if(prefill&&prefill.iaPrompt)document.getElementById('fPrompt').value=prefill.iaPrompt;
+  document.getElementById('fActivo').checked=true;
+  setPlats(prefill?prefill.plataformas:['instagram']);
+  document.getElementById('campoPrompt').style.display=document.getElementById('fIa').checked?'block':'none';
+  document.getElementById('modalBg').classList.add('open');
+  document.getElementById('fNombre').focus();
+}
+function editarAuto(id){
+  const a=autos.find(x=>x.id===id);if(!a)return;
+  abrirModal(a);
+  editandoId=id;
+  document.getElementById('modalTitulo').textContent='Editar automatización';
+  document.getElementById('fActivo').checked=a.activo!==false;
+  document.getElementById('fPrompt').value=a.iaPrompt||'';
+}
+function setPlats(plats){
+  document.querySelectorAll('.plat-select label').forEach(l=>{
+    const cb=l.querySelector('input');
+    cb.checked=(plats||[]).includes(cb.value);
+    l.classList.toggle('on',cb.checked);
+  });
+}
+document.querySelectorAll('.plat-select label').forEach(l=>{
+  l.addEventListener('click',e=>{e.preventDefault();const cb=l.querySelector('input');cb.checked=!cb.checked;l.classList.toggle('on',cb.checked)});
+});
+document.getElementById('fIa').addEventListener('change',e=>{
+  document.getElementById('campoPrompt').style.display=e.target.checked?'block':'none';
+});
+function cerrarModal(){document.getElementById('modalBg').classList.remove('open')}
+document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')}));
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-bg.open').forEach(m=>m.classList.remove('open'))});
+
+function guardarAuto(){
+  const nombre=document.getElementById('fNombre').value.trim();
+  const kws=document.getElementById('fKeywords').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const plats=[...document.querySelectorAll('.plat-select input:checked')].map(i=>i.value);
+  if(!nombre) return toast('Ponle un nombre a la automatización','error');
+  if(!kws.length) return toast('Agrega al menos una palabra clave','error');
+  if(!plats.length) return toast('Selecciona al menos una plataforma','error');
+  const data={
+    id: editandoId||'auto-'+Date.now(),
+    nombre,
+    cliente: document.getElementById('fCliente').value.trim(),
+    plataformas: plats,
+    palabrasClave: kws,
+    respuestaComentario: document.getElementById('fRespuesta').value.trim(),
+    mensajeDM: document.getElementById('fDm').value.trim(),
+    link: document.getElementById('fLink').value.trim(),
+    postUrl: document.getElementById('fPostUrl').value.trim(),
+    requiereFollow: document.getElementById('fFollow').checked,
+    iaActiva: document.getElementById('fIa').checked,
+    iaPrompt: document.getElementById('fPrompt').value.trim(),
+    activo: document.getElementById('fActivo').checked
+  };
+  if(editandoId) autos=autos.map(a=>a.id===editandoId?data:a); else autos.push(data);
+  persistir(); render(); cerrarModal();
+  toast('Guardada — recuerda sincronizar con n8n','exito');
+}
+
+/* ==================== Plantillas ==================== */
+const PLANTILLAS=[
+  {icono:'i-gift', tag:'Lead magnet', nombre:'Guía gratis', desc:'El clásico que construye lista: entregas una guía de valor y capturas al seguidor como lead con conversación IA.',
+   palabrasClave:['GUIA','GUÍA','quiero la guia'], plataformas:['instagram'],
+   respuestaComentario:'¡Listo {nombre}! Te la mandé al DM 🔥\n¡Enviada! Revisa tus mensajes 📩\nYa está en tu DM {nombre} ✅',
+   mensajeDM:'¡Hola {nombre}! 🙌 Gracias por comentar. Aquí está tu guía:',
+   requiereFollow:true,
+   iaActiva:true, iaPrompt:'Eres el asistente de la marca. La persona acaba de recibir una guía gratuita. Responde corto y cercano en español colombiano. Si pregunta algo de la guía, ayúdala. Si muestra interés en más, invítala a agendar una asesoría gratuita.'},
+  {icono:'i-tag', tag:'Ventas', nombre:'Cotización rápida', desc:'Convierte curiosos en prospectos: quien comenta PRECIO recibe el DM y la IA califica al lead antes de pasarlo a humano.',
+   palabrasClave:['PRECIO','INFO','cuanto vale'], plataformas:['instagram','facebook'],
+   respuestaComentario:'Te acabo de escribir al DM {nombre} 💬\n¡Info enviada! Revisa tu DM ✅',
+   mensajeDM:'¡Hola {nombre}! Gracias por tu interés 🙌 Para pasarte el precio exacto, cuéntame: ¿para qué tipo de proyecto lo necesitas?',
+   iaActiva:true, iaPrompt:'Eres el asistente comercial de la marca. Tu objetivo es calificar al lead: pregunta qué necesita, para cuándo y su presupuesto aproximado, una pregunta a la vez. Sé cálido, colombiano y directo. Cuando tengas los 3 datos, dile que un asesor humano le escribe hoy mismo.'},
+  {icono:'i-cal', tag:'Evento', nombre:'Masterclass / Taller', desc:'Llena tu evento sin pauta: el CTA del video registra gente directo desde los comentarios.',
+   palabrasClave:['CLASE','TALLER','quiero entrar'], plataformas:['instagram'],
+   respuestaComentario:'¡Cupo reservado {nombre}! Mira tu DM 🎟️\nTe mandé el acceso al DM ✅',
+   mensajeDM:'¡Qué nota {nombre}! 🎉 Aquí está el link para asegurar tu cupo en la masterclass. Es gratis pero los cupos vuelan:',
+   iaActiva:true, iaPrompt:'Eres el asistente del evento. Confirma la fecha y hora si preguntan, resuelve dudas del temario y genera expectativa. Corto, cercano, español colombiano.'},
+  {icono:'i-gift', tag:'Viralidad', nombre:'Sorteo / Giveaway', desc:'Motor de alcance puro: cada comentario es una participación, y de paso capturas la audiencia como leads.',
+   palabrasClave:['SORTEO','PARTICIPO'], plataformas:['instagram','facebook'],
+   respuestaComentario:'¡Participación registrada {nombre}! 🎁 Revisa tu DM\n¡Estás dentro {nombre}! Mira tus mensajes 🍀',
+   mensajeDM:'¡Hola {nombre}! Tu participación quedó registrada ✅ Te aviso por aquí si ganas. Mientras tanto, aquí tienes un regalo por participar:',
+   requiereFollow:true,
+   iaActiva:false, iaPrompt:''},
+  {icono:'i-spark', tag:'Funnel mentoría', nombre:'Diagnóstico gratis', desc:'El funnel estrella de Lapora: auditoría o diagnóstico gratuito que termina en llamada de venta de mentoría.',
+   palabrasClave:['DIAGNOSTICO','DIAGNÓSTICO','AUDITORIA'], plataformas:['instagram'],
+   respuestaComentario:'¡Hecho {nombre}! Te escribí al DM para agendar 📊\nRevisa tu DM {nombre}, ahí está todo ✅',
+   mensajeDM:'¡Hola {nombre}! 🙌 Me encanta que quieras subir de nivel. Agenda aquí tu diagnóstico gratuito de 30 minutos y te digo exactamente qué mejorar:',
+   iaActiva:true, iaPrompt:'Eres el asistente de una agencia de marketing para creativos. La persona pidió un diagnóstico gratuito. Tu objetivo es que agende la llamada: resuelve objeciones de tiempo o desconfianza con empatía y recuérdale que es gratis y sin compromiso. Español colombiano, directo y cálido.'},
+  {icono:'i-folder', tag:'Portafolio', nombre:'Portafolio al DM', desc:'Para tus clientes creativos: fotógrafos y diseñadores entregan su portafolio completo a quien lo pida en comentarios.',
+   palabrasClave:['PORTAFOLIO','trabajos'], plataformas:['instagram'],
+   respuestaComentario:'¡Enviado {nombre}! Mira tu DM 🎨\nYa te lo mandé {nombre} ✅',
+   mensajeDM:'¡Hola {nombre}! Gracias por el interés en mi trabajo 🙏 Aquí está mi portafolio completo. Si tienes un proyecto en mente, cuéntame y lo cotizamos:',
+   iaActiva:true, iaPrompt:'Eres el asistente de un creativo (fotógrafo/diseñador). La persona pidió el portafolio. Si menciona un proyecto, pregunta fecha, lugar y tipo de servicio para cotizar. Cercano y profesional, español colombiano.'}
+];
+function renderPlantillas(){
+  document.getElementById('listaTpl').innerHTML=PLANTILLAS.map((p,i)=>
+    '<div class="tpl"><div class="tico">'+icono(p.icono,19)+'</div>'
+    +'<span class="tag">'+esc(p.tag)+'</span><h3>'+esc(p.nombre)+'</h3>'
+    +'<p>'+esc(p.desc)+'</p>'
+    +'<span class="tkw">'+p.palabrasClave.map(esc).join(' · ')+'</span>'
+    +'<button class="btn btn-primary btn-sm" style="justify-content:center" onclick="usarPlantilla('+i+')">'+icono('i-plus',13)+' Usar plantilla</button></div>'
+  ).join('');
+}
+function usarPlantilla(i){
+  const p=PLANTILLAS[i];
+  irA('autos');
+  abrirModal(Object.assign({},p,{cliente:'',link:''}));
+}
+
+/* ==================== Leads ==================== */
+async function cargarLeads(manual){
+  leadsCargando=true; renderLeads();
+  try{
+    const r=await fetch(cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-leads');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    let data=await r.json();
+    if(!Array.isArray(data)) data=[data];
+    leadsCache=data.filter(l=>l&&(l.usuario||l.texto));
+    if(manual) toast('Datos actualizados','exito');
+  }catch(e){
+    if(manual) toast('No se pudo conectar con n8n: '+e.message,'error');
+  }
+  leadsCargando=false;
+  renderLeads(); renderDashboard(); pintarNav();
+}
+function leadsFiltrados(){
+  const q=norm(document.getElementById('buscaLead').value);
+  const red=document.getElementById('filtroRed').value;
+  return leadsCache.filter(l=>{
+    if(red&&(l.plataforma||'')!==red)return false;
+    if(!q)return true;
+    return norm(l.usuario).includes(q)||norm(l.texto).includes(q)||norm(l.cliente).includes(q)||norm(l.palabra_clave).includes(q)||norm(l.automatizacion).includes(q);
+  });
+}
+function renderLeads(){
+  const tb=document.getElementById('tbodyLeads');
+  const empty=document.getElementById('emptyLeads');
+  const wrap=document.querySelector('#view-leads .table-wrap');
+  if(leadsCargando){
+    wrap.style.display='block'; empty.style.display='none';
+    tb.innerHTML=Array(4).fill('<tr class="skel">'+Array(8).fill('<td><div></div></td>').join('')+'</tr>').join('');
+    return;
+  }
+  const lista=leadsFiltrados();
+  empty.style.display=leadsCache.length?'none':'block';
+  wrap.style.display=leadsCache.length?'block':'none';
+  tb.innerHTML=lista.map(l=>{
+    const fecha=l.fecha? new Date(l.fecha).toLocaleString('es-CO',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'—';
+    return '<tr><td class="mono">'+esc(fecha)+'</td>'
+      +'<td><span class="badge '+(l.plataforma==='instagram'?'ig':'fb')+'">'+esc(l.plataforma||'—')+'</span></td>'
+      +'<td><b>'+esc(l.usuario||'—')+'</b></td>'
+      +'<td>'+esc(recorte(l.texto,56))+'</td>'
+      +'<td class="mono">'+esc(l.palabra_clave||'—')+'</td>'
+      +'<td>'+esc(l.automatizacion||'—')+'</td>'
+      +'<td>'+esc(l.cliente||'—')+'</td>'
+      +'<td><span class="badge dm">'+esc(l.estado||'—')+'</span></td></tr>';
+  }).join('');
+  if(leadsCache.length && !lista.length){
+    tb.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--muted2);padding:26px">Ningún lead coincide con el filtro.</td></tr>';
+  }
+}
+function exportarCSV(){
+  const lista=leadsFiltrados();
+  if(!lista.length) return toast('No hay leads para exportar','error');
+  const cab=['fecha','plataforma','usuario','texto','palabra_clave','automatizacion','cliente','estado'];
+  const filas=lista.map(l=>cab.map(c=>'"'+String(l[c]||'').replace(/"/g,'""')+'"').join(';'));
+  const csv='﻿'+cab.join(';')+'\n'+filas.join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='laporachat-leads-'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();
+  toast(lista.length+' leads exportados','exito');
+}
+
+/* ==================== CTA Studio ==================== */
+function generarCTA(){
+  const kw=document.getElementById('ctaKw').value.trim().toUpperCase();
+  const oferta=document.getElementById('ctaOferta').value.trim()||'lo que te prometí';
+  const plat=document.getElementById('ctaPlat').value;
+  if(!kw) return toast('Escribe la palabra clave','error');
+  const destino = plat==='tiktok' ? 'en mi Instagram (link en la bio)' : 'aquí abajo';
+  const guiones=[
+    {t:'Cierre directo',x:'Si quieres '+oferta+', es muy fácil: comenta "'+kw+'" '+destino+' y te lo mando directo al DM. Sin vueltas, sin links raros. Comenta "'+kw+'" y listo.'},
+    {t:'Cierre con curiosidad',x:'Y ojo, porque esto es solo la mitad… lo completo no lo puedo mostrar en un video. Comenta "'+kw+'" '+destino+' y te llega todo al DM en segundos.'},
+    {t:'Cierre con urgencia',x:'Esto lo voy a compartir solo con los que se muevan esta semana. Comenta "'+kw+'" '+destino+' ahora y '+oferta+' te llega al DM de una. Después no digas que no te avisé.'}
+  ];
+  const caption='👇 Comenta "'+kw+'" y te mando '+oferta+' directo al DM.\n\nSin formularios, sin enredos: comentas, te llega. 📩\n\n#creativoscolombianos #marketingdigital #emprendercolombia';
+  const fijado='📌 ¿Quieres '+oferta+'? Comenta "'+kw+'" en este post y revisa tu DM 📩 Respondo a todos, uno por uno (bueno… mi asistente IA y yo 😉)';
+  const extra = plat==='tiktok' ? '<div class="cta-item"><div class="lbl">Nota TikTok</div><p>TikTok no permite DMs automáticos, por eso el CTA manda a comentar en tu Instagram. Pon el link de tu IG en la bio de TikTok y menciona tu @usuario en el video.</p></div>' : '';
+  document.getElementById('ctaOut').innerHTML=
+    guiones.map(g=>'<div class="cta-item"><div class="lbl">'+esc(g.t)+'<button class="iconbtn" style="width:28px;height:28px" onclick="copiar(this.closest(\'.cta-item\').querySelector(\'p\').textContent,\'Guion copiado\')" aria-label="Copiar guion">'+icono('i-copy',13)+'</button></div><p>'+esc(g.x)+'</p></div>').join('')
+    +'<div class="cta-item"><div class="lbl">Caption del post<button class="iconbtn" style="width:28px;height:28px" onclick="copiar(this.closest(\'.cta-item\').querySelector(\'p\').textContent,\'Caption copiado\')" aria-label="Copiar caption">'+icono('i-copy',13)+'</button></div><p>'+esc(caption)+'</p></div>'
+    +'<div class="cta-item"><div class="lbl">Comentario fijado<button class="iconbtn" style="width:28px;height:28px" onclick="copiar(this.closest(\'.cta-item\').querySelector(\'p\').textContent,\'Comentario copiado\')" aria-label="Copiar comentario">'+icono('i-copy',13)+'</button></div><p>'+esc(fijado)+'</p></div>'
+    +extra;
+  toast('CTAs generados — cópialos con un clic','exito');
+}
+
+/* ==================== Instalación ==================== */
+const PASOS=[
+  {t:'Crea tu app en Meta Developers (gratis)', h:'Entra a <a href="https://developers.facebook.com" target="_blank" rel="noopener">developers.facebook.com</a> → <b>My Apps → Create App → Business</b>. Agrega los productos <b>Webhooks</b>, <b>Messenger</b> e <b>Instagram</b>. Tu cuenta de Instagram debe ser <b>profesional</b> y estar vinculada a una página de Facebook.'},
+  {t:'Configura el webhook apuntando a tu n8n', h:'En la app de Meta → <b>Webhooks</b>, usa esta URL de callback (ya está activa):<div class="copyline" data-url-meta><span></span><button class="iconbtn" style="width:28px;height:28px" onclick="copiarUrlMeta()" aria-label="Copiar URL">'+ '<svg class="ic" style="width:13px;height:13px"><use href="#i-copy"/></svg>' +'</button></div><b>Verify token:</b> escribe cualquier palabra (ej. <b>laporachat</b>) — el workflow responde el challenge solo. Suscríbete a: <b>comments</b> y <b>messages</b> (Instagram) + <b>feed</b> y <b>messages</b> (Página).'},
+  {t:'Genera el token de página', h:'En <b>Graph API Explorer</b>, genera un token de tu página con permisos: <b>instagram_basic, instagram_manage_comments, instagram_manage_messages, pages_manage_engagement, pages_messaging, pages_read_engagement</b>. Conviértelo a <b>larga duración</b>.'},
+  {t:'Crea la credencial en n8n', h:'En n8n → Credentials → nueva credencial tipo <b>Query Auth</b> llamada <b>"Meta Page Token"</b>: Name = <b>access_token</b>, Value = tu token. Asígnala a los 3 nodos HTTP del workflow <a href="https://mgelvez.app.n8n.cloud/workflow/cH8601wrQleqZ7r4" target="_blank" rel="noopener">Motor Meta</a>.'},
+  {t:'Crea tu automatización y sincroniza', h:'En <b>Automatizaciones</b> crea tu palabra clave (o usa una <b>plantilla</b>), y dale <b>Sincronizar con n8n</b>. Usa el <b>Probador</b> para verificar que el comentario dispara lo que esperas.'},
+  {t:'Prueba con un comentario real', h:'Comenta la palabra clave desde otra cuenta en un post tuyo. Debe llegar la respuesta pública + el DM, y el lead aparece en la pestaña <b>Leads</b>. En modo desarrollo funciona con tus cuentas y testers; para cuentas de clientes pide <b>App Review</b> en Meta (mismo proceso que hizo ManyChat).'}
+];
+function renderPasos(){
+  const wrap=document.getElementById('pasosWrap');
+  wrap.innerHTML=PASOS.map((p,i)=>
+    '<div class="paso'+(cfg.checklist[i]?' done':'')+'">'
+    +'<button class="pcheck" onclick="togglePaso('+i+')" aria-label="Marcar paso '+(i+1)+' como '+(cfg.checklist[i]?'pendiente':'completado')+'">'+icono('i-check',14)+'</button>'
+    +'<div><h3>'+(i+1)+'. '+p.t+'</h3><p>'+p.h+'</p></div></div>'
+  ).join('');
+  const urlEl=wrap.querySelector('[data-url-meta] span');
+  if(urlEl) urlEl.textContent=cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-meta';
+  const hechos=cfg.checklist.filter(Boolean).length;
+  document.getElementById('pfill').style.width=Math.round(hechos/PASOS.length*100)+'%';
+  document.getElementById('plabel').textContent=hechos+' de '+PASOS.length+' pasos'+(hechos===PASOS.length?' — ¡LaporaChat operando! 🚀':'');
+}
+function togglePaso(i){cfg.checklist[i]=!cfg.checklist[i];persistir(cfg.pendiente);renderPasos()}
+function copiarUrlMeta(){copiar(cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-meta','URL del webhook copiada')}
+
+/* ==================== Sincronización ==================== */
+async function sincronizar(){
+  const btns=document.querySelectorAll('[data-syncbtn]');
+  btns.forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch(cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-config',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({automatizaciones:autos,origen:'laporachat-panel',fecha:new Date().toISOString()})
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    cfg.ultimaSync=Date.now();
+    persistir(false);
+    toast('Sincronizado — el motor ya usa tus palabras clave','exito');
+  }catch(e){
+    toast('No se pudo conectar con n8n: '+e.message,'error');
+  }
+  btns.forEach(b=>b.disabled=false);
+}
+
+/* ==================== Ajustes ==================== */
+function abrirAjustes(){document.getElementById('fN8n').value=cfg.n8n;document.getElementById('ajustesBg').classList.add('open')}
+function cerrarAjustes(){document.getElementById('ajustesBg').classList.remove('open')}
+function guardarAjustes(){
+  const url=document.getElementById('fN8n').value.trim();
+  if(!url.startsWith('http')) return toast('URL inválida','error');
+  cfg.n8n=url;
+  persistir(cfg.pendiente);
+  cerrarAjustes(); renderPasos();
+  toast('Ajustes guardados','exito');
+}
+
+/* ==================== Init ==================== */
+pintarNav();
+irA('dashboard');
+render();
+renderPlantillas();
+renderPasos();
+actualizarSync();
+cargarLeads();
+</script>
+</body>
+</html>

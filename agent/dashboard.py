@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, UploadFile, File
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from io import StringIO
 import re as _re
 import hashlib as _hashlib
@@ -3808,133 +3808,14 @@ async def vista_laporachat(user: str = Depends(verificar_credenciales)):
 
 
 # ════════════════════════════════════════════════════════════
-# MI CONTENIDO — Automatizaciones y palabras clave (LaporaChat)
+# MI CONTENIDO — Panel LaporaChat completo (app embebida)
 # ════════════════════════════════════════════════════════════
 
-_CONTENIDO_BODY = """
-<main class="main">
-    <div class="page-header">
-        <div>
-            <div class="page-title">🎬 Mi contenido — Automatizaciones</div>
-            <div class="page-subtitle">Las palabras clave de cada video y su desempeño, en vivo desde el motor LaporaChat</div>
-        </div>
-        <button class="btn btn-secondary" onclick="cargarTodo()">↻ Actualizar</button>
-    </div>
-
-    <div class="stats-grid" id="statsRow" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:18px"></div>
-
-    <div id="listaAutos" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
-    <div id="vacio" style="display:none;text-align:center;padding:50px;color:#6B7280">
-        <div style="font-size:38px;margin-bottom:10px">🎬</div>
-        <div style="font-weight:600;color:#111827;margin-bottom:6px">Aún no hay automatizaciones</div>
-        <div style="font-size:13.5px">Créalas desde el panel LaporaChat y sincroniza con n8n.</div>
-    </div>
-
-    <style>
-        .auto-card { background:#fff; border:1px solid #E5E7EB; border-radius:14px; padding:18px; }
-        .auto-card h3 { font-size:15px; font-weight:700; color:#111827; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
-        .kw-chip { display:inline-block; background:#FEF2F2; color:#B91C1C; border:1px solid #FECACA;
-                   padding:4px 12px; border-radius:99px; font-size:12.5px; font-weight:700;
-                   text-transform:uppercase; letter-spacing:.4px; margin:0 6px 6px 0; }
-        .mini-badge { display:inline-block; font-size:10.5px; font-weight:700; padding:3px 9px;
-                      border-radius:99px; margin-right:6px; margin-bottom:6px; }
-        .mb-verde { background:#ECFDF5; color:#047857; }
-        .mb-gris  { background:#F3F4F6; color:#6B7280; }
-        .mb-azul  { background:#EFF6FF; color:#1D4ED8; }
-        .mb-ambar { background:#FFFBEB; color:#B45309; }
-        .mb-rosa  { background:#FDF2F8; color:#BE185D; }
-        .detalle-linea { font-size:12.5px; color:#6B7280; line-height:1.6; margin-top:4px; }
-        .detalle-linea b { color:#374151; }
-        .stat-box { background:#fff; border:1px solid #E5E7EB; border-radius:12px; padding:14px 16px; }
-        .stat-box b { display:block; font-size:24px; color:#111827; }
-        .stat-box span { font-size:12px; color:#6B7280; }
-        .video-link { font-size:12.5px; color:#DC2626; text-decoration:none; font-weight:600; }
-        .video-link:hover { text-decoration:underline; }
-    </style>
-
-    <script>
-    const URL_AUTOS = 'https://mgelvez.app.n8n.cloud/webhook/laporachat-automatizaciones';
-    const URL_LEADS = 'https://mgelvez.app.n8n.cloud/webhook/laporachat-leads';
-
-    function esc(s) {
-        const d = document.createElement('div');
-        d.textContent = s == null ? '' : String(s);
-        return d.innerHTML;
-    }
-
-    async function cargarTodo() {
-        let autos = [], leads = [];
-        try {
-            const [ra, rl] = await Promise.all([fetch(URL_AUTOS), fetch(URL_LEADS)]);
-            autos = (await ra.json() || []).filter(a => a && a.nombre);
-            leads = (await rl.json() || []).filter(l => l && (l.usuario || l.texto));
-            if (!Array.isArray(autos)) autos = [autos];
-            if (!Array.isArray(leads)) leads = [leads];
-        } catch (e) {
-            document.getElementById('statsRow').innerHTML =
-                '<div class="stat-box" style="grid-column:1/-1;color:#B91C1C">No se pudo conectar con el motor n8n: ' + esc(e.message) + '</div>';
-            return;
-        }
-
-        const activas = autos.filter(a => a.activo !== false);
-        const totalKw = activas.reduce((t, a) => t + String(a.palabras_clave || '').split(',').filter(Boolean).length, 0);
-        document.getElementById('statsRow').innerHTML =
-            '<div class="stat-box"><b>' + activas.length + '</b><span>Automatizaciones activas</span></div>' +
-            '<div class="stat-box"><b>' + totalKw + '</b><span>Palabras clave vigiladas</span></div>' +
-            '<div class="stat-box"><b>' + leads.length + '</b><span>Leads captados</span></div>' +
-            '<div class="stat-box"><b>' + autos.filter(a => a.post_url).length + '</b><span>Amarradas a un video</span></div>';
-
-        const cont = document.getElementById('listaAutos');
-        document.getElementById('vacio').style.display = autos.length ? 'none' : 'block';
-
-        cont.innerHTML = autos.map(a => {
-            const nLeads = leads.filter(l => (l.automatizacion || '') === a.nombre).length;
-            const kws = String(a.palabras_clave || '').split(',').map(k => k.trim()).filter(Boolean);
-            const respuestas = String(a.respuesta_comentario || '').split(/\\r?\\n/).filter(Boolean);
-            const video = a.post_url
-                ? '<a class="video-link" href="' + esc(a.post_url) + '" target="_blank">🎬 Ver el video de esta palabra ↗</a>'
-                : '<span class="detalle-linea">🌍 Aplica a todos tus posts</span>';
-            return '<div class="auto-card">' +
-                '<h3>' + esc(a.nombre) + (a.activo === false ? ' <span class="mini-badge mb-gris">PAUSADA</span>' : ' <span class="mini-badge mb-verde">ACTIVA</span>') + '</h3>' +
-                '<div style="margin-bottom:8px">' + kws.map(k => '<span class="kw-chip">' + esc(k) + '</span>').join('') + '</div>' +
-                '<div style="margin-bottom:8px">' +
-                    (a.requiere_follow ? '<span class="mini-badge mb-ambar">🔒 Solo seguidores</span>' : '') +
-                    (a.ia_activa ? '<span class="mini-badge mb-verde">🤖 IA activa</span>' : '') +
-                    (a.cliente ? '<span class="mini-badge mb-azul">📁 ' + esc(a.cliente) + '</span>' : '') +
-                    '<span class="mini-badge mb-rosa">👥 ' + nLeads + ' leads</span>' +
-                '</div>' +
-                '<div>' + video + '</div>' +
-                '<div class="detalle-linea"><b>Respuesta:</b> ' + esc((respuestas[0] || '—').slice(0, 70)) +
-                    (respuestas.length > 1 ? ' <span style="color:#047857">(+' + (respuestas.length - 1) + ' rotan)</span>' : '') + '</div>' +
-                '<div class="detalle-linea"><b>DM:</b> ' + esc(String(a.mensaje_dm || '—').slice(0, 70)) + '</div>' +
-                (a.link ? '<div class="detalle-linea"><b>Link:</b> ' + esc(String(a.link).slice(0, 50)) + '</div>' : '') +
-            '</div>';
-        }).join('');
-    }
-
-    cargarTodo();
-    </script>
-</main>
-</div>
-</body>
-</html>"""
+_PANEL_LAPORACHAT = os.path.join(os.path.dirname(__file__), "static", "laporachat_panel.html")
 
 
 @router.get("/contenido", response_class=HTMLResponse)
 async def vista_contenido(user: str = Depends(verificar_credenciales)):
-    """Mi contenido: automatizaciones y palabras clave por video, en vivo desde el motor LaporaChat (n8n)."""
-    stats = await _obtener_stats()
-
-    head = f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mi contenido - LaporaChat - CRM</title>
-    {CSS_BASE}
-</head>
-<body>
-    <div class="app">
-        {sidebar_html("contenido", stats)}
-"""
-    return head + _CONTENIDO_BODY
+    """Panel LaporaChat completo: dashboard, automatizaciones, palabras clave por video,
+    plantillas, leads, CTA Studio y kit — la app entera embebida en el CRM."""
+    return FileResponse(_PANEL_LAPORACHAT, media_type="text/html")
