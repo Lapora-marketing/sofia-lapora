@@ -1095,7 +1095,40 @@ function togglePaso(i){cfg.checklist[i]=!cfg.checklist[i];persistir(cfg.pendient
 function copiarUrlMeta(){copiar(cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-meta','URL del webhook copiada')}
 
 /* ==================== Sincronización ==================== */
+async function importarDelMotor(){
+  try{
+    const r=await fetch(cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-automatizaciones');
+    if(!r.ok) return;
+    let data=await r.json();
+    if(!Array.isArray(data)) data=[data];
+    const filas=data.filter(x=>x&&x.nombre);
+    if(!filas.length) return;
+    autos=filas.map(f=>({
+      id:String(f.automation_id||('auto-'+Date.now()+Math.random().toString(36).slice(2,6))),
+      nombre:String(f.nombre||''),
+      cliente:String(f.cliente||''),
+      plataformas:String(f.plataforma||'instagram').split(',').map(s=>s.trim()).filter(Boolean),
+      palabrasClave:String(f.palabras_clave||'').split(',').map(s=>s.trim()).filter(Boolean),
+      respuestaComentario:String(f.respuesta_comentario||''),
+      mensajeDM:String(f.mensaje_dm||''),
+      link:String(f.link||''),
+      postUrl:String(f.post_url||''),
+      requiereFollow:f.requiere_follow===true,
+      iaActiva:f.ia_activa===true,
+      iaPrompt:String(f.ia_prompt||''),
+      activo:f.activo!==false
+    }));
+    persistir(false);
+    render(); renderDashboard();
+    toast('Se importaron '+autos.length+' automatización(es) desde el motor','exito');
+  }catch(e){ /* motor inaccesible: el panel sigue vacío sin romper nada */ }
+}
+
 async function sincronizar(){
+  if(autos.length===0){
+    const seguro=confirm('⚠️ Tu lista de automatizaciones está VACÍA.\n\nSincronizar así BORRARÁ TODAS las automatizaciones del motor y tu Instagram dejará de responder a las palabras clave.\n\n¿Seguro que quieres continuar?');
+    if(!seguro) return;
+  }
   const btns=document.querySelectorAll('[data-syncbtn]');
   btns.forEach(b=>b.disabled=true);
   try{
@@ -1133,6 +1166,7 @@ renderPlantillas();
 renderPasos();
 actualizarSync();
 cargarLeads();
+if(autos.length===0) importarDelMotor();
 </script>
 </body>
 </html>
