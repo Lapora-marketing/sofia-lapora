@@ -3230,7 +3230,7 @@ async def vista_config(
               <li>Cada paciente con cita en las próximas 24-26h recibe una llamada automática</li>
               <li>SofIA se identifica como asistente virtual de tu clínica</li>
               <li>Confirma asistencia, propone reagenda o registra cancelación</li>
-              <li>Solo llama en horario hábil: Lun-Vie 9-12 + 2-5pm (hora Colombia)</li>
+              <li>Solo llama en horario hábil: Lun-Vie 1pm-8pm (hora Colombia)</li>
               <li>Si el paciente no contesta, reintenta 1 vez al día siguiente</li>
             </ol>
           </div>
