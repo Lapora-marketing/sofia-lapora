@@ -315,6 +315,7 @@
   </aside>
 
   <main class="main">
+    <div id="bannerEstado" style="display:none;align-items:flex-start;flex-wrap:wrap;gap:10px;padding:12px 16px;border-radius:var(--r-md);margin-bottom:16px;font-size:13.5px;font-weight:600;border:1px solid;line-height:1.4;max-width:100%"></div>
     <!-- topbar móvil -->
     <header class="mtop">
       <div class="brand">
@@ -1158,6 +1159,29 @@ function guardarAjustes(){
   toast('Ajustes guardados','exito');
 }
 
+/* ==================== Monitor de salud ==================== */
+async function revisarEstadoSistema(){
+  try{
+    const r=await fetch(cfg.n8n.replace(/\/$/,'')+'/webhook/laporachat-estado');
+    if(!r.ok) return;
+    let data=await r.json();
+    if(!Array.isArray(data)) data=[data];
+    const ig=data.find(x=>x&&x.componente==='instagram_token');
+    const banner=document.getElementById('bannerEstado');
+    if(!banner) return;
+    if(ig&&ig.estado==='roto'){
+      const fecha=ig.roto_desde?new Date(ig.roto_desde).toLocaleString('es-CO',{dateStyle:'medium',timeStyle:'short'}):'fecha desconocida';
+      banner.style.display='flex';
+      banner.style.background='var(--danger)22';
+      banner.style.borderColor='var(--danger)55';
+      banner.style.color='var(--danger)';
+      banner.innerHTML='<span style="flex-shrink:0">🔴</span><span style="flex:1;min-width:0"><b>Instagram desconectado</b> desde '+fecha+' — '+(ig.detalle||'revisa el token')+'. Ve a Meta for Developers, regenera el token IG y actualízalo en n8n (credencial "Query Auth account"). El motor no puede responder comentarios ni DMs hasta que esto se arregle.</span>';
+    }else{
+      banner.style.display='none';
+    }
+  }catch(e){ /* monitor inaccesible: no romper el panel */ }
+}
+
 /* ==================== Init ==================== */
 pintarNav();
 irA('dashboard');
@@ -1167,6 +1191,7 @@ renderPasos();
 actualizarSync();
 cargarLeads();
 if(autos.length===0) importarDelMotor();
+revisarEstadoSistema();
 </script>
 </body>
 </html>
